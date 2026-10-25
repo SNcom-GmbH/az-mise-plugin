@@ -20,7 +20,7 @@ mise ls-remote azure-ac:mein-tool
 mise exec -- mein-tool --version
 ```
 
-Der Helfer wird automatisch aus GitHub-Release `v0.2.0` geladen. Das Release muss
+Der Helfer wird automatisch aus GitHub-Release `v0.3.0` geladen. Das Release muss
 veröffentlicht sein; private Downloads benötigen `GITHUB_TOKEN` oder `GH_TOKEN`.
 Für Produktion den Plugin-Ref auf einen vollständigen Commit-SHA pinnen.
 

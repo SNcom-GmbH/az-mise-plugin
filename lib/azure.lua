@@ -21,7 +21,7 @@ function M.run(action, ctx)
 		MISE_NO_CONFIG = "1",
 		AZURE_AC_MISE = os.getenv("MISE_BIN") or "mise",
 		-- Exact helper release and platform asset: never select a different platform.
-		AZURE_AC_HELPER_TOOL = "github:DominicWrege/az-mise-plugin[asset_pattern=" .. asset .. "]@0.2.0",
+		AZURE_AC_HELPER_TOOL = "github:DominicWrege/az-mise-plugin[asset_pattern=" .. asset .. "]@0.3.0",
 		AZURE_AC_REQUEST = json.encode({
 			action = action,
 			tool = ctx.tool,
