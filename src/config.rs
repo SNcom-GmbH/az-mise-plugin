@@ -101,7 +101,7 @@ pub fn relative(value: &str) -> Result<&str> {
 			&& value
 				.split('/')
 				.all(|p| !p.is_empty() && p != "." && p != ".."),
-		"Expected a safe relative blob/archive path"
+		"Expected a safe relative blob/archive path, got {value:?}"
 	);
 	Ok(value)
 }
@@ -121,7 +121,7 @@ pub fn destination(root: &Path, name: &str) -> Result<PathBuf> {
 				&& (base.starts_with("COM") || base.starts_with("LPT"))
 				&& matches!(base.as_bytes()[3], b'1'..=b'9'))
 		{
-			bail!("Archive contains a nonportable Windows filename");
+			bail!("Archive contains a nonportable Windows filename component {part:?}");
 		}
 	}
 	Ok(root.join(name))

@@ -63,3 +63,7 @@ Uploads überschreiben nur mit `--overwrite`; Downloads überschreiben nie.
 Vor dem ersten Release `AZURE_AC_HELPER` auf das lokal gebaute Binary oder ein
 entpacktes CI-Artefakt setzen. CI baut statisches Linux-musl und Windows mit statischer
 C-Runtime. Ein `v*`-Tag veröffentlicht die Binaries und `SHA256SUMS` als GitHub-Release.
+
+## Lizenz
+
+MIT

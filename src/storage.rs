@@ -259,6 +259,7 @@ mod tests {
 			json!([{"name": "hello/a", "size": 3}, {"name": "hello/b", "size": 4}])
 		);
 		let requests = http.requests.lock().expect("test mutex");
+		assert!(requests[0].0.contains("prefix=hello"));
 		assert!(requests[1].0.contains("marker=page-2"));
 		Ok(())
 	}

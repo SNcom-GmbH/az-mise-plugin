@@ -46,6 +46,40 @@ fn zip(name: &str, link: bool) -> Vec<u8> {
 	writer.finish().expect("fixture").into_inner()
 }
 
+fn zip_without_unix_mode(name: &str) -> Vec<u8> {
+	let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+	let options =
+		zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+	writer.start_file(name, options).expect("fixture");
+	writer.write_all(b"hello world").expect("fixture");
+	writer.finish().expect("fixture").into_inner()
+}
+
+fn tar_entry(name: &str, data: &[u8]) -> Result<Vec<u8>> {
+	let mut builder = tar::Builder::new(Vec::new());
+	let mut header = tar::Header::new_gnu();
+	header.set_size(data.len() as u64);
+	header.set_mode(0o755);
+	header.set_cksum();
+	builder.append_data(&mut header, name, Cursor::new(data))?;
+	Ok(builder.into_inner()?)
+}
+
+// The tar crate refuses to build paths containing `..`, so write the raw
+// header ourselves to exercise the extractor's traversal checks.
+fn raw_tar_entry(name: &str, data: &[u8]) -> Result<Vec<u8>> {
+	assert!(name.len() <= 100, "fixture name too long");
+	let mut builder = tar::Builder::new(Vec::new());
+	let mut header = tar::Header::new_gnu();
+	header.set_size(data.len() as u64);
+	header.set_mode(0o755);
+	header.set_entry_type(tar::EntryType::Regular);
+	header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+	header.set_cksum();
+	builder.append(&header, data)?;
+	Ok(builder.into_inner()?)
+}
+
 fn put(root: &Path, name: &str, bytes: &[u8]) {
 	let path = root.join(name);
 	fs::create_dir_all(path.parent().expect("fixture")).expect("fixture");
@@ -177,6 +211,26 @@ async fn install_zip_with_checksum_and_executable_mode() -> Result<()> {
 }
 
 #[tokio::test]
+async fn install_zip_without_unix_mode_makes_bin_executable() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	release(root.path(), &zip_without_unix_mode("bin/hello"), None);
+	let r = request(root.path(), "install");
+	dispatch(&FileStorage(root.path().into()), &r).await?;
+	let binary = r.install_path.as_ref().expect("fixture").join("bin/hello");
+	assert_eq!(fs::read(&binary)?, b"hello world");
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		assert_ne!(
+			fs::metadata(binary)?.permissions().mode() & 0o111,
+			0,
+			"zip entries without a Unix mode must still be executable"
+		);
+	}
+	Ok(())
+}
+
+#[tokio::test]
 async fn corrupt_artifact_installs_nothing() -> Result<()> {
 	let root = tempfile::tempdir()?;
 	release(root.path(), &zip("bin/hello", false), Some(&"0".repeat(64)));
@@ -211,10 +265,29 @@ async fn missing_platform_and_bin_are_rejected() -> Result<()> {
 }
 
 #[tokio::test]
+async fn install_rejects_a_file_at_the_destination_before_download() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	release(root.path(), &zip("bin/hello", false), None);
+	let r = request(root.path(), "install");
+	let install_path = r.install_path.clone().expect("fixture");
+	let download_path = r.download_path.clone().expect("fixture");
+	fs::write(&install_path, b"not a directory")?;
+	assert!(
+		dispatch(&FileStorage(root.path().into()), &r)
+			.await
+			.is_err()
+	);
+	assert!(!download_path.exists());
+	assert_eq!(fs::read(install_path)?, b"not a directory");
+	Ok(())
+}
+
+#[tokio::test]
 async fn installation_never_overwrites_existing_content() -> Result<()> {
 	let root = tempfile::tempdir()?;
 	release(root.path(), &zip("bin/hello", false), None);
 	let r = request(root.path(), "install");
+	let download_path = r.download_path.clone().expect("fixture");
 	put(
 		r.install_path.as_ref().expect("fixture"),
 		"user.txt",
@@ -225,6 +298,10 @@ async fn installation_never_overwrites_existing_content() -> Result<()> {
 			.await
 			.is_err()
 	);
+	assert!(
+		!download_path.exists(),
+		"destination validation must happen before the artifact download"
+	);
 	assert_eq!(
 		fs::read(r.install_path.expect("fixture").join("user.txt"))?,
 		b"keep me"
@@ -233,7 +310,7 @@ async fn installation_never_overwrites_existing_content() -> Result<()> {
 }
 
 #[test]
-fn zip_traversal_links_and_duplicate_paths_are_rejected() -> Result<()> {
+fn zip_traversal_and_links_are_rejected() -> Result<()> {
 	let root = tempfile::tempdir()?;
 	for (name, link) in [
 		("../escape", false),
@@ -246,6 +323,29 @@ fn zip_traversal_links_and_duplicate_paths_are_rejected() -> Result<()> {
 		assert!(archive::extract(&archive, &root.path().join("stage")).is_err());
 	}
 	assert!(!root.path().join("escape").exists());
+	Ok(())
+}
+
+#[test]
+fn zip_case_insensitive_duplicate_paths_are_rejected() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+	for name in ["bin/hello", "BIN/HELLO"] {
+		writer
+			.start_file(
+				name,
+				zip::write::SimpleFileOptions::default()
+					.compression_method(zip::CompressionMethod::Stored)
+					.unix_permissions(0o755),
+			)
+			.expect("fixture");
+		writer.write_all(b"hello").expect("fixture");
+	}
+	let archive = root.path().join("duplicate.zip");
+	fs::write(&archive, writer.finish().expect("fixture").into_inner())?;
+	let error = archive::extract(&archive, &root.path().join("stage"))
+		.expect_err("duplicate paths must fail");
+	assert!(error.to_string().contains("duplicate"));
 	Ok(())
 }
 
@@ -283,6 +383,68 @@ fn tar_extracts_regular_files_but_rejects_links() -> Result<()> {
 		assert_eq!(result.is_err(), link);
 	}
 	assert_eq!(fs::read(root.path().join("regular/bin/hello"))?, b"hello");
+	Ok(())
+}
+
+#[test]
+fn tar_path_traversal_is_rejected() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let tar = raw_tar_entry("../escape", b"hello")?;
+	let file = fs::File::create(root.path().join("test.tar.gz"))?;
+	let mut gzip = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+	gzip.write_all(&tar)?;
+	gzip.finish()?;
+	assert!(
+		archive::extract(&root.path().join("test.tar.gz"), &root.path().join("stage")).is_err()
+	);
+	assert!(!root.path().join("escape").exists());
+	Ok(())
+}
+
+#[test]
+fn tar_xz_and_bz2_extract_regular_files() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let tar = tar_entry("bin/hello", b"hello")?;
+
+	let mut xz = lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::default())?;
+	xz.write_all(&tar)?;
+	fs::write(root.path().join("test.tar.xz"), xz.finish()?)?;
+
+	let mut bz2 = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::best());
+	bz2.write_all(&tar)?;
+	fs::write(root.path().join("test.tar.bz2"), bz2.finish()?)?;
+
+	archive::extract(&root.path().join("test.tar.xz"), &root.path().join("xz"))?;
+	archive::extract(&root.path().join("test.tar.bz2"), &root.path().join("bz2"))?;
+	assert_eq!(fs::read(root.path().join("xz/bin/hello"))?, b"hello");
+	assert_eq!(fs::read(root.path().join("bz2/bin/hello"))?, b"hello");
+	Ok(())
+}
+
+#[tokio::test]
+async fn install_replaces_an_empty_install_directory() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	release(root.path(), &zip("bin/hello", false), None);
+	let r = request(root.path(), "install");
+	fs::create_dir_all(r.install_path.as_ref().expect("fixture"))?;
+	dispatch(&FileStorage(root.path().into()), &r).await?;
+	assert_eq!(
+		fs::read(r.install_path.expect("fixture").join("bin/hello"))?,
+		b"hello world"
+	);
+	Ok(())
+}
+
+#[tokio::test]
+async fn read_rejects_non_utf8_blobs() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	put(root.path(), "storage/blob.bin", &[0xff, 0x00]);
+	let mut r = request(root.path(), "read");
+	r.blob = Some("blob.bin".into());
+	let error = dispatch(&FileStorage(root.path().join("storage")), &r)
+		.await
+		.expect_err("binary read must fail");
+	assert!(error.to_string().contains("not valid UTF-8"));
 	Ok(())
 }
 

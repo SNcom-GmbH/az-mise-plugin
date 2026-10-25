@@ -57,8 +57,8 @@ enum Command {
 async fn main() {
 	azure_ac::initialize_tls();
 	if let Err(error) = run().await {
-		// Display only the top-level contextual message, never raw SDK response chains.
-		eprintln!("azure-ac: {error}");
+		// sdk_error sanitizes SDK failures, so showing the context chain is safe.
+		eprintln!("azure-ac: {error:#}");
 		std::process::exit(1);
 	}
 }

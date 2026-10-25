@@ -98,7 +98,7 @@ jobs:
                   unzip -q dist/azure-ac-windows-amd64.zip -d windows
                   objdump -p windows/azure-ac.exe > imports.txt
                   grep "DLL Name" imports.txt
-                  if grep -Ei "DLL Name:.*(vcruntime|msvcp|ucrtbase|api-ms-win-crt|msalruntime)" imports.txt; then
+                  if grep -Ei "DLL Name:.*(vcruntime|msvcp|ucrtbase|api-ms-win-crt|msalruntime|libssl|libcrypto|openssl)" imports.txt; then
                       echo "Unexpected runtime DLL dependency"
                       exit 1
                   fi
