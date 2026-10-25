@@ -41,12 +41,13 @@ function M.run(action, ctx)
 		env.AZURE_AC_HELPER = override
 		command = [["$AZURE_AC_HELPER" hook]]
 		if RUNTIME.osType == "windows" then
-			command = [[""%AZURE_AC_HELPER%" hook"]]
+			-- mise already supplies cmd.exe's outer /s quote pair.
+			command = [["%AZURE_AC_HELPER%" hook]]
 		end
 	else
 		command = [["$AZURE_AC_MISE" exec "$AZURE_AC_HELPER_TOOL" -- azure-ac hook]]
 		if RUNTIME.osType == "windows" then
-			command = [[""%AZURE_AC_MISE%" exec "%AZURE_AC_HELPER_TOOL%" -- azure-ac hook"]]
+			command = [["%AZURE_AC_MISE%" exec "%AZURE_AC_HELPER_TOOL%" -- azure-ac hook]]
 		end
 	end
 	local result = json.decode(cmd.exec(command, { env = env }))

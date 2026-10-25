@@ -15,7 +15,6 @@ async fn main() -> Result<()> {
 	if env::var("AZURE_AC_LOGIN").as_deref() == Ok("1") {
 		anyhow::ensure!(!noninteractive(), "Interactive authentication disabled");
 		fs::write(login, "mock-account-no-tokens")?;
-		println!("{{}}");
 		return Ok(());
 	}
 	if !login.exists() {

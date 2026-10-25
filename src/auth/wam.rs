@@ -151,7 +151,9 @@ fn acquire_on_com_thread(options: &Options, interactive: bool) -> Result<AccessT
 		}
 	};
 	let status = result.ResponseStatus().map_err(windows_error)?;
-	if status == WebTokenRequestStatus::UserInteractionRequired {
+	if status == WebTokenRequestStatus::UserInteractionRequired
+		|| status == WebTokenRequestStatus::AccountSwitch
+	{
 		return Err(AuthenticationRequired.into());
 	}
 	if status == WebTokenRequestStatus::UserCancel {

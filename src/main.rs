@@ -106,17 +106,22 @@ async fn run() -> Result<()> {
 			println!("{}", json!({"authentication_required": true}));
 			return Ok(());
 		}
-		Err(error) if error.is::<AuthenticationRequired>() && !hook && !noninteractive() => {
+		Err(error)
+			if error.is::<AuthenticationRequired>() && !hook && !login && !noninteractive() =>
+		{
 			auth::credential(&request.options, true).await?
 		}
 		Err(error) => return Err(error),
 	};
-	let result = if login {
-		json!({})
-	} else {
-		let storage = AzureStorage::new(url, credential)?;
-		azure_ac::dispatch(&storage, &request).await?
-	};
+	if login {
+		// The streamed hook login must not pollute mise ls-remote's stdout.
+		if !hook {
+			println!("{{}}");
+		}
+		return Ok(());
+	}
+	let storage = AzureStorage::new(url, credential)?;
+	let result = azure_ac::dispatch(&storage, &request).await?;
 	println!("{}", serde_json::to_string(&result)?);
 	Ok(())
 }

@@ -140,13 +140,14 @@ fn real_mise_lua_rust_install_and_silent_reuse() -> Result<()> {
 		);
 	}
 	// The project declaration installs the local plugin automatically; no manual link step.
-	assert!(
+	assert_eq!(
 		success(mise(
 			&project,
 			&environment,
 			&["ls-remote", "azure-ac:hello"]
 		)?)?
-		.contains("1.0.0")
+		.trim(),
+		"1.0.0"
 	);
 	assert!(root.path().join("authenticated").is_file());
 	success(mise(&project, &environment, &["install"])?)?;
