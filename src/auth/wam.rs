@@ -9,7 +9,13 @@ use azure_core::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
-use std::{fs, io::Write, path::PathBuf, sync::Arc};
+use std::{
+	fs,
+	io::Write,
+	path::{Path, PathBuf},
+	sync::Arc,
+};
+use tokio::sync::Mutex;
 use windows::{
 	Security::Authentication::Web::Core::{
 		WebAuthenticationCoreManager, WebTokenRequest, WebTokenRequestResult, WebTokenRequestStatus,
@@ -26,17 +32,23 @@ use windows::{
 };
 
 pub async fn credential(options: &Options, interactive: bool) -> Result<Arc<dyn TokenCredential>> {
-	match acquire(options.clone(), false).await {
-		Ok(_) => (),
+	let token = match acquire(options.clone(), false).await {
+		Ok(token) => token,
 		Err(error) if interactive && error.is::<AuthenticationRequired>() => {
-			acquire(options.clone(), true).await?;
+			acquire(options.clone(), true).await?
 		}
 		Err(error) => return Err(error),
-	}
-	Ok(Arc::new(WamCredential(options.clone())))
+	};
+	Ok(Arc::new(WamCredential {
+		options: options.clone(),
+		token: Mutex::new(Some(token)),
+	}))
 }
 
-struct WamCredential(Options);
+struct WamCredential {
+	options: Options,
+	token: Mutex<Option<AccessToken>>,
+}
 impl std::fmt::Debug for WamCredential {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.write_str("WamCredential { .. }")
@@ -56,12 +68,21 @@ impl TokenCredential for WamCredential {
 				"Unsupported token scope",
 			));
 		}
-		acquire(self.0.clone(), false).await.map_err(|_| {
+		let mut cached = self.token.lock().await;
+		if let Some(token) = cached
+			.as_ref()
+			.filter(|token| token.expires_on > OffsetDateTime::now_utc() + Duration::minutes(5))
+		{
+			return Ok(token.clone());
+		}
+		let token = acquire(self.options.clone(), false).await.map_err(|_| {
 			azure_core::Error::with_message(
 				azure_core::error::ErrorKind::Credential,
 				"WAM could not silently renew the storage token; rerun the command interactively",
 			)
-		})
+		})?;
+		*cached = Some(token.clone());
+		Ok(token)
 	}
 }
 
@@ -111,6 +132,12 @@ fn acquire_on_com_thread(options: &Options, interactive: bool) -> Result<AccessT
 			)),
 		)
 		.map_err(windows_error)?;
+	let account_path = account_path(options)?;
+	let saved_id = if interactive {
+		None
+	} else {
+		saved_account_id(&account_path)?
+	};
 	let result = if interactive {
 		let mut window = unsafe { GetConsoleWindow() };
 		if window.is_invalid() {
@@ -127,28 +154,21 @@ fn acquire_on_com_thread(options: &Options, interactive: bool) -> Result<AccessT
 			unsafe { interop.RequestTokenForWindowAsync(window, &request) }
 				.map_err(windows_error)?;
 		operation.join().map_err(windows_error)?
+	} else if let Some(id) = saved_id.as_deref() {
+		// Never silently switch to another Windows account when a selection disappears.
+		let account = WebAuthenticationCoreManager::FindAccountAsync(&provider, &HSTRING::from(id))
+			.map_err(windows_error)?
+			.join()
+			.map_err(|_| AuthenticationRequired)?;
+		WebAuthenticationCoreManager::GetTokenSilentlyWithWebAccountAsync(&request, &account)
+			.map_err(windows_error)?
+			.join()
+			.map_err(windows_error)?
 	} else {
-		let account_path = account_path(options)?;
-		if account_path.exists() {
-			let id: String = serde_json::from_slice(&fs::read(&account_path)?).context(
-				"Invalid saved WAM account selection; remove the account metadata file and sign in again",
-			)?;
-			// Never silently switch to another Windows account when a selection disappears.
-			let account =
-				WebAuthenticationCoreManager::FindAccountAsync(&provider, &HSTRING::from(id))
-					.map_err(windows_error)?
-					.join()
-					.map_err(|_| AuthenticationRequired)?;
-			WebAuthenticationCoreManager::GetTokenSilentlyWithWebAccountAsync(&request, &account)
-				.map_err(windows_error)?
-				.join()
-				.map_err(windows_error)?
-		} else {
-			WebAuthenticationCoreManager::GetTokenSilentlyAsync(&request)
-				.map_err(windows_error)?
-				.join()
-				.map_err(windows_error)?
-		}
+		WebAuthenticationCoreManager::GetTokenSilentlyAsync(&request)
+			.map_err(windows_error)?
+			.join()
+			.map_err(windows_error)?
 	};
 	let status = result.ResponseStatus().map_err(windows_error)?;
 	if status == WebTokenRequestStatus::UserInteractionRequired
@@ -177,15 +197,11 @@ fn acquire_on_com_thread(options: &Options, interactive: bool) -> Result<AccessT
 		.Id()
 		.map_err(windows_error)?
 		.to_string();
-	let account_path = account_path(options)?;
-	let parent = account_path.parent().context("Invalid WAM metadata path")?;
-	fs::create_dir_all(parent)?;
-	// This is only the selected OS account ID, never an access or refresh token.
-	let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-	temporary.write_all(serde_json::to_string(&id)?.as_bytes())?;
-	temporary
-		.persist(&account_path)
-		.map_err(|_| anyhow!("Could not save WAM account selection"))?;
+	if saved_id.as_deref() != Some(id.as_str()) {
+		// Account selection is only a convenience for silent sign-in. A valid
+		// token must never fail because the profile or metadata file is locked.
+		let _ = save_account_id(&account_path, &id);
+	}
 	// JWT decoding here ONLY schedules renewal; it does not verify identity or grant access.
 	let expiry = token
 		.split('.')
@@ -194,7 +210,9 @@ fn acquire_on_com_thread(options: &Options, interactive: bool) -> Result<AccessT
 		.and_then(|payload| serde_json::from_slice::<serde_json::Value>(&payload).ok())
 		.and_then(|claims| claims["exp"].as_i64())
 		.and_then(|exp| OffsetDateTime::from_unix_timestamp(exp).ok())
-		.unwrap_or_else(|| OffsetDateTime::now_utc() + Duration::seconds(30));
+		// If the JWT payload cannot be decoded, refresh conservatively instead
+		// of retrying the broker on every storage request.
+		.unwrap_or_else(|| OffsetDateTime::now_utc() + Duration::minutes(10));
 	Ok(AccessToken::new(token, expiry))
 }
 
@@ -208,10 +226,63 @@ fn account_path(options: &Options) -> Result<PathBuf> {
 	)))
 }
 
+fn saved_account_id(path: &Path) -> Result<Option<String>> {
+	match fs::read(path) {
+		Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).context(
+			"Invalid saved WAM account selection; remove the account metadata file and sign in again",
+		)?)),
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+		Err(error) => Err(error)
+			.with_context(|| format!("Could not read WAM account metadata {}", path.display())),
+	}
+}
+
+fn save_account_id(path: &Path, id: &str) -> Result<()> {
+	let parent = path.parent().context("Invalid WAM metadata path")?;
+	fs::create_dir_all(parent)?;
+	// This is only the selected OS account ID, never an access or refresh token.
+	let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+	temporary.write_all(serde_json::to_string(id)?.as_bytes())?;
+	temporary
+		.persist(path)
+		.map_err(|_| anyhow!("Could not save WAM account selection"))?;
+	Ok(())
+}
+
 fn windows_error(error: windows::core::Error) -> anyhow::Error {
 	// Avoid OS error messages that may contain usernames or tenant response bodies.
 	anyhow!(
 		"Windows WAM API failed (HRESULT 0x{:08X}); check broker availability and app registration",
 		error.code().0 as u32
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn saved_account_id_round_trips() {
+		let root = tempfile::tempdir().expect("temp dir");
+		let path = root.path().join("metadata/account.json");
+		assert_eq!(saved_account_id(&path).expect("missing file"), None);
+		save_account_id(&path, "account-id").expect("save account id");
+		assert_eq!(
+			saved_account_id(&path).expect("read account id"),
+			Some("account-id".into())
+		);
+	}
+
+	#[test]
+	fn corrupt_account_metadata_is_rejected() {
+		let root = tempfile::tempdir().expect("temp dir");
+		let path = root.path().join("account.json");
+		fs::write(&path, b"not json").expect("fixture");
+		let error = saved_account_id(&path).expect_err("corrupt metadata");
+		assert!(
+			error
+				.to_string()
+				.contains("Invalid saved WAM account selection")
+		);
+	}
 }

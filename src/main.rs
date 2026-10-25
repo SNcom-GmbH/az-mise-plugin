@@ -22,6 +22,8 @@ struct Cli {
 	client_id: String,
 	#[arg(long, default_value = "auto")]
 	auth: String,
+	#[arg(long)]
+	managed_identity_client_id: Option<String>,
 	#[command(subcommand)]
 	command: Command,
 }
@@ -34,6 +36,8 @@ enum Command {
 	List {
 		#[arg(long, default_value = "")]
 		prefix: String,
+		#[arg(long)]
+		limit: Option<usize>,
 	},
 	Versions {
 		tool: String,
@@ -74,12 +78,15 @@ async fn run() -> Result<()> {
 			"options": Options {
 				storage_url: cli.storage_url.context("--storage-url is required")?,
 				tenant_id: cli.tenant_id, client_id: cli.client_id, auth: cli.auth,
-				managed_identity_client_id: None,
+				managed_identity_client_id: cli.managed_identity_client_id,
+				sha256: None,
 			}
 		});
 		let args = match cli.command {
 			Command::Login => json!({"action": "login"}),
-			Command::List { prefix } => json!({"action": "list", "prefix": prefix}),
+			Command::List { prefix, limit } => {
+				json!({"action": "list", "prefix": prefix, "limit": limit})
+			}
 			Command::Versions { tool } => json!({"action": "versions", "tool": tool}),
 			Command::Read { blob } => json!({"action": "read", "blob": blob}),
 			Command::Download { blob, file } => {

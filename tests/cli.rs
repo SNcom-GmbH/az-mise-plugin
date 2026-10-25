@@ -45,6 +45,22 @@ fn failed_ci_configuration_does_not_fall_back_to_a_user() {
 }
 
 #[test]
+fn invalid_managed_identity_client_id_is_rejected() {
+	let output = cli()
+		.args([
+			"--storage-url",
+			"https://account.blob.core.windows.net/tools",
+			"--managed-identity-client-id",
+			"bad id",
+			"list",
+		])
+		.output()
+		.expect("CLI");
+	assert!(!output.status.success());
+	assert!(String::from_utf8_lossy(&output.stderr).contains("managed_identity_client_id"));
+}
+
+#[test]
 fn unsafe_endpoint_is_rejected_before_credentials() {
 	let output = cli()
 		.env("AZURE_CLIENT_SECRET", "fake-secret")

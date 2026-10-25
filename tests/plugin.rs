@@ -3,7 +3,7 @@ mod common;
 use anyhow::Result;
 use azure_ac::{
 	archive,
-	config::{Options, Request, destination},
+	config::{Options, Request, blob_path, destination, filename},
 	dispatch,
 	storage::Storage,
 };
@@ -93,6 +93,19 @@ fn release(root: &Path, bytes: &[u8], checksum: Option<&str>) {
 	}}}).to_string().as_bytes());
 }
 
+fn release_with_size(root: &Path, bytes: &[u8], size: u64) {
+	put(root, "hello/1.0.0/hello.zip", bytes);
+	put(
+		root,
+		"hello/1.0.0/release.json",
+		json!({"platforms": {"linux-amd64": {
+			"file": "hello.zip", "sha256": hex::encode(Sha256::digest(bytes)), "size": size
+		}}})
+		.to_string()
+		.as_bytes(),
+	);
+}
+
 #[test]
 fn validate_storage_endpoints_before_authentication() {
 	assert!(options().validate().is_ok());
@@ -130,6 +143,11 @@ fn reject_unsafe_and_nonportable_paths() {
 		"bin/../escape",
 		"bin\\escape",
 		"bin/NUL",
+		"bin/CONIN$",
+		"bin/CONOUT$",
+		"bin/CLOCK$",
+		"bin/COM¹",
+		"bin/LPT³",
 		"bin/com1.exe",
 		"bin/file:ads",
 		"bin/end.",
@@ -142,6 +160,54 @@ fn reject_unsafe_and_nonportable_paths() {
 			destination(Path::new("/tmp/test"), name).is_err(),
 			"accepted {name}"
 		);
+	}
+}
+
+#[test]
+fn blob_paths_allow_legal_azure_names() {
+	for name in [
+		"logs/2026-10-25T12:00:00Z.txt",
+		"reports/100% complete.txt",
+		"a#b/c?d",
+		"bin/tool",
+	] {
+		assert!(blob_path(name).is_ok(), "rejected {name}");
+	}
+	for name in ["../escape", "a//b", "a/../b", "a\\b", "a/./b", ""] {
+		assert!(blob_path(name).is_err(), "accepted {name}");
+	}
+}
+
+#[test]
+fn validate_artifact_options() {
+	let mut o = options();
+	o.managed_identity_client_id = Some("client-id".into());
+	o.sha256 = Some("0".repeat(64));
+	assert!(o.validate().is_ok());
+
+	o.sha256 = Some("0".repeat(63));
+	assert!(o.validate().is_err());
+
+	o.sha256 = None;
+	o.managed_identity_client_id = Some("bad client".into());
+	assert!(o.validate().is_err());
+}
+
+#[test]
+fn portable_filenames_reject_windows_names() {
+	for name in ["hello.zip", "tool-1.0.0.tar.gz"] {
+		assert!(filename(name).is_ok(), "rejected {name}");
+	}
+	for name in [
+		"CON.zip",
+		"hello?.zip",
+		"hello.zip.",
+		"hello.zip ",
+		"COM¹",
+		"CLOCK$",
+		"a/b",
+	] {
+		assert!(filename(name).is_err(), "accepted {name}");
 	}
 }
 
@@ -227,6 +293,70 @@ async fn install_zip_without_unix_mode_makes_bin_executable() -> Result<()> {
 			"zip entries without a Unix mode must still be executable"
 		);
 	}
+	Ok(())
+}
+
+#[tokio::test]
+async fn install_with_pinned_sha256() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let bytes = zip("bin/hello", false);
+	release(root.path(), &bytes, None);
+	let mut r = request(root.path(), "install");
+	r.options.sha256 = Some(hex::encode(Sha256::digest(&bytes)));
+	dispatch(&FileStorage(root.path().into()), &r).await?;
+	assert_eq!(
+		fs::read(r.install_path.expect("fixture").join("bin/hello"))?,
+		b"hello world"
+	);
+	Ok(())
+}
+
+#[tokio::test]
+async fn install_rejects_mismatched_pin_before_download() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let bytes = zip("bin/hello", false);
+	release(root.path(), &bytes, None);
+	let mut r = request(root.path(), "install");
+	let install_path = r.install_path.clone().expect("fixture");
+	let download_path = r.download_path.clone().expect("fixture");
+	r.options.sha256 = Some("0".repeat(64));
+	let error = dispatch(&FileStorage(root.path().into()), &r)
+		.await
+		.expect_err("pin mismatch must fail");
+	assert!(format!("{error:#}").contains("Pinned SHA-256"));
+	assert!(!install_path.exists());
+	assert!(!download_path.exists());
+	Ok(())
+}
+
+#[tokio::test]
+async fn oversized_artifact_is_rejected() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let bytes = zip("bin/hello", false);
+	release_with_size(root.path(), &bytes, 1);
+	let r = request(root.path(), "install");
+	let install_path = r.install_path.clone().expect("fixture");
+	let error = dispatch(&FileStorage(root.path().into()), &r)
+		.await
+		.expect_err("oversized artifact must fail");
+	let message = format!("{error:#}");
+	assert!(message.contains("exceeds") || message.contains("limit"));
+	assert!(!install_path.exists());
+	Ok(())
+}
+
+#[tokio::test]
+async fn artifact_size_above_limit_is_rejected() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let bytes = zip("bin/hello", false);
+	release_with_size(root.path(), &bytes, 5 * 1024 * 1024 * 1024);
+	let r = request(root.path(), "install");
+	let download_path = r.download_path.clone().expect("fixture");
+	let error = dispatch(&FileStorage(root.path().into()), &r)
+		.await
+		.expect_err("oversized manifest must fail");
+	assert!(format!("{error:#}").contains("exceeds"));
+	assert!(!download_path.exists());
 	Ok(())
 }
 
@@ -468,9 +598,24 @@ async fn list_read_download_and_explicit_overwrite() -> Result<()> {
 		json!([{"name": "notes.txt", "size": 5}])
 	);
 	let output = root.path().join("output.txt");
-	store.download("notes.txt", &output).await?;
-	assert!(store.download("notes.txt", &output).await.is_err());
+	store.download("notes.txt", &output, None).await?;
+	assert!(store.download("notes.txt", &output, None).await.is_err());
 	assert_eq!(fs::read(output)?, b"hello");
+	Ok(())
+}
+
+#[tokio::test]
+async fn list_limit_is_enforced() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	put(root.path(), "storage/a", b"a");
+	put(root.path(), "storage/b", b"b");
+	let store = FileStorage(root.path().join("storage"));
+	let mut r = request(root.path(), "list");
+	r.limit = Some(1);
+	let error = dispatch(&store, &r)
+		.await
+		.expect_err("list limit must be enforced");
+	assert!(format!("{error:#}").contains("exceeds"));
 	Ok(())
 }
 

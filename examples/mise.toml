@@ -10,4 +10,9 @@ azure-ac = "https://github.com/DominicWrege/az-mise-plugin.git#main"
 # Azure Pipelines: use a service principal. Map AZURE_TENANT_ID,
 # AZURE_CLIENT_ID and secret AZURE_CLIENT_SECRET into the task environment.
 # auth = "environment"
+# Optional independent artifact pin (64 hex characters):
+# sha256 = "..."
+# Optional user-assigned managed identity:
+# auth = "managed"
+# managed_identity_client_id = "..."
 # Pin the plugin to a full commit SHA instead of main in production.

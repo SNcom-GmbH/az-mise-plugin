@@ -1,8 +1,8 @@
 use crate::{
 	auth::{http_client, sdk_error},
-	config::relative,
+	config::blob_path,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use azure_core::{
 	credentials::TokenCredential,
 	http::{Body, ClientOptions, Transport},
@@ -16,12 +16,15 @@ use serde_json::{Value, json};
 use std::{fs, io::Write, path::Path, sync::Arc};
 use url::Url;
 
+pub const MAX_LIST_RESULTS: usize = 100_000;
+const MAX_READ_BYTES: usize = 16 * 1024 * 1024;
+
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {
 	async fn read(&self, blob: &str) -> Result<Vec<u8>>;
-	async fn download(&self, blob: &str, file: &Path) -> Result<()>;
+	async fn download(&self, blob: &str, file: &Path, max_bytes: Option<u64>) -> Result<()>;
 	async fn upload(&self, blob: &str, file: &Path, overwrite: bool) -> Result<()>;
-	async fn list(&self, prefix: &str) -> Result<Value>;
+	async fn list(&self, prefix: &str, limit: usize) -> Result<Value>;
 }
 
 pub struct AzureStorage(BlobContainerClient);
@@ -45,15 +48,21 @@ impl Storage for AzureStorage {
 	async fn read(&self, blob: &str) -> Result<Vec<u8>> {
 		let response = self
 			.0
-			.blob_client(relative(blob)?)
+			.blob_client(blob_path(blob)?)
 			.download(None)
 			.await
 			.map_err(sdk_error)?;
+		if let Some(length) = response.properties.content_length {
+			ensure!(
+				length <= MAX_READ_BYTES as u64,
+				"JSON/text blob exceeds 16 MiB; use download"
+			);
+		}
 		let mut stream = response.body;
 		let mut result = Vec::new();
 		while let Some(chunk) = stream.try_next().await.map_err(sdk_error)? {
 			ensure!(
-				result.len() + chunk.len() <= 16 * 1024 * 1024,
+				result.len() + chunk.len() <= MAX_READ_BYTES,
 				"JSON/text blob exceeds 16 MiB; use download"
 			);
 			result.extend_from_slice(&chunk);
@@ -61,20 +70,36 @@ impl Storage for AzureStorage {
 		Ok(result)
 	}
 
-	async fn download(&self, blob: &str, file: &Path) -> Result<()> {
+	async fn download(&self, blob: &str, file: &Path, max_bytes: Option<u64>) -> Result<()> {
 		let response = self
 			.0
-			.blob_client(relative(blob)?)
+			.blob_client(blob_path(blob)?)
 			.download(None)
 			.await
 			.map_err(sdk_error)?;
+		if let (Some(max), Some(length)) = (max_bytes, response.properties.content_length) {
+			ensure!(
+				length <= max,
+				"Download is {length} bytes, exceeding the {max}-byte limit"
+			);
+		}
 		let mut stream = response.body;
 		let mut output = fs::OpenOptions::new()
 			.write(true)
 			.create_new(true)
 			.open(file)?;
 		let result: Result<()> = async {
+			let mut written = 0u64;
 			while let Some(chunk) = stream.try_next().await.map_err(sdk_error)? {
+				written = written
+					.checked_add(chunk.len() as u64)
+					.context("Download size overflow")?;
+				if let Some(max) = max_bytes {
+					ensure!(
+						written <= max,
+						"Download exceeds the {max}-byte limit; artifact rejected"
+					);
+				}
 				output.write_all(&chunk)?;
 			}
 			output.sync_all()?;
@@ -100,14 +125,18 @@ impl Storage for AzureStorage {
 			..Default::default()
 		};
 		self.0
-			.blob_client(relative(blob)?)
+			.blob_client(blob_path(blob)?)
 			.upload(Body::from(stream).into(), Some(options))
 			.await
 			.map_err(sdk_error)?;
 		Ok(())
 	}
 
-	async fn list(&self, prefix: &str) -> Result<Value> {
+	async fn list(&self, prefix: &str, limit: usize) -> Result<Value> {
+		ensure!(
+			(1..=MAX_LIST_RESULTS).contains(&limit),
+			"limit must be between 1 and {MAX_LIST_RESULTS}"
+		);
 		let mut pager = self
 			.0
 			.list_blobs(Some(BlobContainerClientListBlobsOptions {
@@ -117,6 +146,10 @@ impl Storage for AzureStorage {
 			.map_err(sdk_error)?;
 		let mut result = Vec::new();
 		while let Some(blob) = pager.try_next().await.map_err(sdk_error)? {
+			ensure!(
+				result.len() < limit,
+				"Listing exceeds {limit} blobs; use a narrower prefix"
+			);
 			result.push(
 				json!({"name": blob.name, "size": blob.properties.and_then(|p| p.content_length)}),
 			);
@@ -225,6 +258,27 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn sdk_download_rejects_oversized_artifacts() -> Result<()> {
+		let root = tempfile::tempdir()?;
+		let target = root.path().join("artifact");
+		let mut headers = Headers::new();
+		headers.insert("content-length", "5");
+		headers.insert("content-range", "bytes 0-4/5");
+		let (store, _) = storage(vec![(
+			StatusCode::PartialContent,
+			headers,
+			Bytes::from_static(b"hello"),
+		)])?;
+		let error = store
+			.download("hello/a", &target, Some(4))
+			.await
+			.expect_err("oversized download must fail");
+		assert!(error.to_string().contains("exceed"));
+		assert!(!target.exists());
+		Ok(())
+	}
+
+	#[tokio::test]
 	async fn sdk_upload_uses_conditional_writes_unless_explicitly_overwritten() -> Result<()> {
 		let root = tempfile::tempdir()?;
 		let file = root.path().join("file.txt");
@@ -255,12 +309,28 @@ mod tests {
 			(StatusCode::Ok, Headers::new(), Bytes::from_static(second)),
 		])?;
 		assert_eq!(
-			store.list("hello/").await?,
+			store.list("hello/", MAX_LIST_RESULTS).await?,
 			json!([{"name": "hello/a", "size": 3}, {"name": "hello/b", "size": 4}])
 		);
 		let requests = http.requests.lock().expect("test mutex");
 		assert!(requests[0].0.contains("prefix=hello"));
 		assert!(requests[1].0.contains("marker=page-2"));
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn sdk_listing_enforces_limit() -> Result<()> {
+		let first = br#"<EnumerationResults ServiceEndpoint="https://account.blob.core.windows.net/" ContainerName="tools"><Blobs><Blob><Name>hello/a</Name><Properties><Content-Length>3</Content-Length><BlobType>BlockBlob</BlobType></Properties></Blob></Blobs><NextMarker>page-2</NextMarker></EnumerationResults>"#;
+		let second = br#"<EnumerationResults ServiceEndpoint="https://account.blob.core.windows.net/" ContainerName="tools"><Blobs><Blob><Name>hello/b</Name><Properties><Content-Length>4</Content-Length><BlobType>BlockBlob</BlobType></Properties></Blob></Blobs><NextMarker /></EnumerationResults>"#;
+		let (store, _) = storage(vec![
+			(StatusCode::Ok, Headers::new(), Bytes::from_static(first)),
+			(StatusCode::Ok, Headers::new(), Bytes::from_static(second)),
+		])?;
+		let error = store
+			.list("hello/", 1)
+			.await
+			.expect_err("limit must be enforced");
+		assert!(error.to_string().contains("exceeds"));
 		Ok(())
 	}
 }

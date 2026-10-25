@@ -1,13 +1,20 @@
 #[cfg(windows)]
 mod wam;
 
-use crate::config::{Options, SCOPE};
-use anyhow::{Result, anyhow, bail};
+use crate::config::{DEFAULT_CLIENT, Options, SCOPE};
+use anyhow::{Context, Result, anyhow, bail};
 use azure_core::credentials::TokenCredential;
 use azure_identity::{
 	ClientSecretCredential, ManagedIdentityCredential, WorkloadIdentityCredential,
 };
 use std::{env, sync::Arc};
+
+fn option_or_env(option: &str, default: &str, env_name: &str) -> Result<String> {
+	if option != default {
+		return Ok(option.to_owned());
+	}
+	env::var(env_name).with_context(|| format!("{env_name} is required"))
+}
 
 #[derive(Debug)]
 pub struct AuthenticationRequired;
@@ -112,9 +119,11 @@ pub async fn credential(options: &Options, interactive: bool) -> Result<Arc<dyn 
 	let credential: Arc<dyn TokenCredential> = if mode == "environment"
 		|| (mode == "auto" && env::var_os("AZURE_CLIENT_SECRET").is_some())
 	{
+		let tenant = option_or_env(&options.tenant_id, "organizations", "AZURE_TENANT_ID")?;
+		let client = option_or_env(&options.client_id, DEFAULT_CLIENT, "AZURE_CLIENT_ID")?;
 		ClientSecretCredential::new(
-			&env::var("AZURE_TENANT_ID").map_err(|_| anyhow!("AZURE_TENANT_ID is required"))?,
-			env::var("AZURE_CLIENT_ID").map_err(|_| anyhow!("AZURE_CLIENT_ID is required"))?,
+			&tenant,
+			client,
 			env::var("AZURE_CLIENT_SECRET")
 				.map_err(|_| anyhow!("AZURE_CLIENT_SECRET is required"))?
 				.into(),
@@ -124,7 +133,20 @@ pub async fn credential(options: &Options, interactive: bool) -> Result<Arc<dyn 
 	} else if mode == "workload"
 		|| (mode == "auto" && env::var_os("AZURE_FEDERATED_TOKEN_FILE").is_some())
 	{
-		WorkloadIdentityCredential::new(None).map_err(sdk_error)?
+		let config = azure_identity::WorkloadIdentityCredentialOptions {
+			tenant_id: Some(option_or_env(
+				&options.tenant_id,
+				"organizations",
+				"AZURE_TENANT_ID",
+			)?),
+			client_id: Some(option_or_env(
+				&options.client_id,
+				DEFAULT_CLIENT,
+				"AZURE_CLIENT_ID",
+			)?),
+			..Default::default()
+		};
+		WorkloadIdentityCredential::new(Some(config)).map_err(sdk_error)?
 	} else if mode == "managed" {
 		let mut config = azure_identity::ManagedIdentityCredentialOptions::default();
 		if let Some(client) = &options.managed_identity_client_id {
@@ -203,6 +225,18 @@ mod tests {
 		assert!(throttled.contains("throttled"));
 		let unavailable = http_error(StatusCode::ServiceUnavailable, None).to_string();
 		assert!(unavailable.contains("temporarily"));
+	}
+
+	#[test]
+	fn explicit_identity_options_are_used() {
+		assert_eq!(
+			option_or_env("tenant", "organizations", "AZURE_TENANT_ID").expect("tenant"),
+			"tenant"
+		);
+		assert_eq!(
+			option_or_env("client", DEFAULT_CLIENT, "AZURE_CLIENT_ID").expect("client"),
+			"client"
+		);
 	}
 
 	#[test]

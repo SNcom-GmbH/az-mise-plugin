@@ -4,11 +4,13 @@ pub mod config;
 pub mod storage;
 
 use anyhow::{Context, Result, bail, ensure};
-use config::{Request, relative};
+use config::{Request, blob_path, filename, portable_path};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, fs, io::Read, path::Path};
-use storage::Storage;
+use storage::{MAX_LIST_RESULTS, Storage};
+
+const MAX_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Installs the Rustls ring provider once per process.
 pub fn initialize_tls() {
@@ -18,7 +20,7 @@ pub fn initialize_tls() {
 pub async fn dispatch(store: &dyn Storage, request: &Request) -> Result<Value> {
 	match request.action.as_str() {
 		"versions" => {
-			let tool = relative(request.tool.as_deref().context("tool is required")?)?;
+			let tool = portable_path(request.tool.as_deref().context("tool is required")?)?;
 			let bytes = store
 				.read(&format!("{tool}/index.json"))
 				.await
@@ -38,21 +40,28 @@ pub async fn dispatch(store: &dyn Storage, request: &Request) -> Result<Value> {
 					.as_str()
 					.or_else(|| entry["version"].as_str())
 					.context("Invalid version")?;
-				relative(version)?;
+				filename(version)?;
 				ensure!(
-					!version.contains('/') && seen.insert(version),
-					"Invalid or duplicate release version"
+					seen.insert(version),
+					"Duplicate release version {version:?}"
 				);
 			}
 			Ok(json!({"versions": versions}))
 		}
 		"install" => install(store, request).await,
-		"list" => store
-			.list(&request.prefix)
-			.await
-			.with_context(|| format!("Could not list blobs with prefix {:?}", request.prefix)),
+		"list" => {
+			let limit = request.limit.unwrap_or(MAX_LIST_RESULTS);
+			ensure!(
+				(1..=MAX_LIST_RESULTS).contains(&limit),
+				"limit must be between 1 and {MAX_LIST_RESULTS}"
+			);
+			store
+				.list(&request.prefix, limit)
+				.await
+				.with_context(|| format!("Could not list blobs with prefix {:?}", request.prefix))
+		}
 		"read" => {
-			let blob = relative(request.blob.as_deref().context("blob is required")?)?;
+			let blob = blob_path(request.blob.as_deref().context("blob is required")?)?;
 			let bytes = store
 				.read(blob)
 				.await
@@ -62,17 +71,17 @@ pub async fn dispatch(store: &dyn Storage, request: &Request) -> Result<Value> {
 			Ok(json!({"text": text}))
 		}
 		"download" => {
-			let blob = relative(request.blob.as_deref().context("blob is required")?)?;
+			let blob = blob_path(request.blob.as_deref().context("blob is required")?)?;
 			let file = request.file.as_deref().context("file is required")?;
 			// The storage implementation uses create_new; existing files are never replaced.
 			store
-				.download(blob, file)
+				.download(blob, file, Some(MAX_ARTIFACT_BYTES))
 				.await
 				.with_context(|| format!("Could not download {blob} to {}", file.display()))?;
 			Ok(json!({"downloaded": blob}))
 		}
 		"upload" => {
-			let blob = relative(request.blob.as_deref().context("blob is required")?)?;
+			let blob = blob_path(request.blob.as_deref().context("blob is required")?)?;
 			let file = request.file.as_deref().context("file is required")?;
 			store
 				.upload(blob, file, request.overwrite)
@@ -85,9 +94,8 @@ pub async fn dispatch(store: &dyn Storage, request: &Request) -> Result<Value> {
 }
 
 async fn install(store: &dyn Storage, request: &Request) -> Result<Value> {
-	let tool = relative(request.tool.as_deref().context("tool is required")?)?;
-	let version = relative(request.version.as_deref().context("version is required")?)?;
-	ensure!(!version.contains('/'), "Version must be one path component");
+	let tool = portable_path(request.tool.as_deref().context("tool is required")?)?;
+	let version = filename(request.version.as_deref().context("version is required")?)?;
 	let platform = request
 		.platform
 		.as_deref()
@@ -100,15 +108,39 @@ async fn install(store: &dyn Storage, request: &Request) -> Result<Value> {
 		.with_context(|| format!("Invalid JSON in {tool}/{version}/release.json"))?;
 	let asset = &release["platforms"][platform];
 	ensure!(!asset.is_null(), "Release has no artifact for {platform}");
-	let name = relative(
+	let name = filename(
 		asset["file"]
 			.as_str()
 			.context("Artifact file is required")?,
 	)?;
-	ensure!(!name.contains('/'), "Artifact file must be a filename");
-	let expected = hex::decode(asset["sha256"].as_str().context("SHA-256 is required")?)
+	let artifact_limit = match &asset["size"] {
+		Value::Null => MAX_ARTIFACT_BYTES,
+		value => value
+			.as_u64()
+			.context("Artifact size must be a nonnegative integer")?,
+	};
+	ensure!(
+		artifact_limit <= MAX_ARTIFACT_BYTES,
+		"Artifact size {artifact_limit} exceeds the {MAX_ARTIFACT_BYTES}-byte limit"
+	);
+	let manifest_expected = hex::decode(asset["sha256"].as_str().context("SHA-256 is required")?)
 		.context("Artifact SHA-256 must contain 64 hexadecimal digits")?;
-	ensure!(expected.len() == 32, "Artifact requires a SHA-256 digest");
+	ensure!(
+		manifest_expected.len() == 32,
+		"Artifact requires a SHA-256 digest"
+	);
+	let expected = if let Some(pin) = request.options.sha256.as_deref() {
+		let pinned =
+			hex::decode(pin).context("Pinned SHA-256 must contain 64 hexadecimal digits")?;
+		ensure!(pinned.len() == 32, "Pinned SHA-256 requires 64 digits");
+		ensure!(
+			pinned == manifest_expected,
+			"Pinned SHA-256 does not match release.json; refusing to install"
+		);
+		pinned
+	} else {
+		manifest_expected
+	};
 	let download = request
 		.download_path
 		.as_deref()
@@ -140,7 +172,7 @@ async fn install(store: &dyn Storage, request: &Request) -> Result<Value> {
 	let archive = temporary.path().join(name);
 	let blob = format!("{tool}/{version}/{name}");
 	store
-		.download(&blob, &archive)
+		.download(&blob, &archive, Some(artifact_limit))
 		.await
 		.with_context(|| format!("Could not download artifact {blob}"))?;
 	let actual = sha256_digest(&archive)
