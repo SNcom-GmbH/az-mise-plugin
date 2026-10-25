@@ -1,0 +1,125 @@
+name: "Rust checks and static helpers"
+
+on:
+    push:
+        branches: ["main"]
+        tags: ["v*"]
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: "read"
+
+jobs:
+    build:
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: "ubuntu-latest"
+                      target: "x86_64-unknown-linux-musl"
+                      asset: "azure-ac-linux-amd64-musl.tar.gz"
+                    - runner: "ubuntu-24.04-arm"
+                      target: "aarch64-unknown-linux-musl"
+                      asset: "azure-ac-linux-arm64-musl.tar.gz"
+                    - runner: "windows-latest"
+                      target: "x86_64-pc-windows-msvc"
+                      asset: "azure-ac-windows-amd64.zip"
+        runs-on: "${{ matrix.runner }}"
+        timeout-minutes: 25
+        steps:
+            - uses: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" # v4
+            - uses: "jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db" # v3
+              with:
+                  version: "2026.10.3"
+            - name: "Install musl compiler"
+              if: "runner.os == 'Linux'"
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install --yes musl-tools
+            - name: "Install Rust target"
+              run: "rustup target add ${{ matrix.target }}"
+            - name: "Formatting"
+              run: "cargo fmt --all -- --check"
+            - name: "Build test-only helper"
+              run: "cargo build --locked --target ${{ matrix.target }} --example mock_helper"
+            - name: "Unit and mise integration tests"
+              run: "cargo test --locked --target ${{ matrix.target }} --all-targets"
+            - name: "Clippy"
+              run: "cargo clippy --locked --target ${{ matrix.target }} --all-targets -- -D warnings"
+            - name: "Release build"
+              run: "cargo build --locked --release --target ${{ matrix.target }} --bin azure-ac"
+            - name: "Verify and package Linux static executable"
+              if: "runner.os == 'Linux'"
+              shell: "bash"
+              env:
+                  TARGET: "${{ matrix.target }}"
+                  ASSET: "${{ matrix.asset }}"
+              run: |
+                  binary="target/$TARGET/release/azure-ac"
+                  file "$binary"
+                  if readelf -l "$binary" | grep -q INTERP; then
+                      echo "Unexpected dynamic ELF interpreter"
+                      exit 1
+                  fi
+                  if readelf -d "$binary" | grep -q NEEDED; then
+                      echo "Unexpected shared-library dependency"
+                      exit 1
+                  fi
+                  "$binary" --version
+                  mkdir dist
+                  tar -czf "dist/$ASSET" -C "target/$TARGET/release" azure-ac
+            - name: "Package Windows static-CRT executable"
+              if: "runner.os == 'Windows'"
+              shell: "pwsh"
+              env:
+                  TARGET: "${{ matrix.target }}"
+                  ASSET: "${{ matrix.asset }}"
+              run: |
+                  $binary = "target/$env:TARGET/release/azure-ac.exe"
+                  & $binary --version
+                  New-Item -ItemType Directory dist
+                  Compress-Archive -Path $binary -DestinationPath "dist/$env:ASSET"
+            - uses: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" # v4
+              with:
+                  name: "${{ matrix.asset }}"
+                  path: "dist/*"
+                  if-no-files-found: "error"
+
+    verify:
+        needs: "build"
+        runs-on: "ubuntu-latest"
+        steps:
+            - uses: "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" # v4
+              with:
+                  path: "dist"
+                  merge-multiple: true
+            - name: "Verify Windows needs no extra CRT or MSAL runtime DLL"
+              run: |
+                  unzip -q dist/azure-ac-windows-amd64.zip -d windows
+                  objdump -p windows/azure-ac.exe > imports.txt
+                  grep "DLL Name" imports.txt
+                  if grep -Ei "DLL Name:.*(vcruntime|msvcp|ucrtbase|api-ms-win-crt|msalruntime)" imports.txt; then
+                      echo "Unexpected runtime DLL dependency"
+                      exit 1
+                  fi
+
+    release:
+        if: "startsWith(github.ref, 'refs/tags/v')"
+        needs: "verify"
+        runs-on: "ubuntu-latest"
+        permissions:
+            contents: "write"
+        steps:
+            - uses: "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" # v4
+              with:
+                  path: "dist"
+                  merge-multiple: true
+            - name: "Checksums"
+              working-directory: "dist"
+              run: "sha256sum azure-ac-* > SHA256SUMS"
+            - name: "Publish tagged helper release"
+              env:
+                  GH_TOKEN: "${{ github.token }}"
+                  GH_REPO: "${{ github.repository }}"
+              run: 'gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" --generate-notes'

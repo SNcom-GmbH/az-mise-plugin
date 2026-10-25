@@ -2,9 +2,11 @@
 azure-ac = "https://github.com/DominicWrege/az-mise-plugin.git#main"
 
 [tools]
-"azure-ac:hello" = { version = "1.0.0", storage_url = "https://YOURACCOUNT.blob.core.windows.net/tools" }
+"azure-ac:hello" = { version = "1.0.0", storage_url = "https://youraccount.blob.core.windows.net/tools" }
 
 # Optional enterprise identity settings (same tool entry):
 # tenant_id = "your-tenant-id"
 # client_id = "your-public-client-app-id"
+# Linux is CI-only: set AZURE_TENANT_ID, AZURE_CLIENT_ID and either
+# AZURE_FEDERATED_TOKEN_FILE or AZURE_CLIENT_SECRET in the CI environment.
 # Pin the plugin to a full commit SHA instead of main in production.

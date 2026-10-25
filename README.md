@@ -1,20 +1,26 @@
 # Azure Blob Backend für mise
 
-Privater mise-Backend-Prototyp: Tools aus einem Azure Blob Container installieren,
-Versionen auflisten und Dateien lesen, herunterladen oder hochladen. **Keine Azure
-CLI und kein manuelles `az login` erforderlich.**
+Tools aus privaten Azure Blob Containern installieren: **minimales Lua für mise,
+alles Weitere in Rust**. Keine Azure CLI, kein Python/uv, kein Browser-Login.
 
-**Stand:** Installation einschließlich Lua-Hooks, automatischer Plugin-Installation
-und Login-Wiederverwendung lokal mit Mock-Storage getestet. Echter Azure-Zugriff und
-Windows-WAM-SSO sind noch auf dem Arbeitsrechner zu prüfen. Das ist ein Startpunkt,
-kein bereits produktiv verifiziertes Authentifizierungsprodukt.
+## Plattformen und Anmeldung
+
+| Plattform | Anmeldung | Helfer |
+| --- | --- | --- |
+| Windows x64 | natives Entra-/WAM-SSO, optional CI-Identitäten | MSVC mit statisch gelinkter C-Runtime |
+| Linux x64 | CI: Workload Identity, Service Principal, Managed Identity | statischer musl-Build |
+| Linux ARM64 | dieselben CI-Anmeldeverfahren | statischer musl-Build |
+
+**Linux ist bewusst CI-only.** Es gibt weder Browser- noch Device-Code-Login und
+keinen automatischen Wechsel auf andere Identitäten, wenn die konfigurierte
+CI-Anmeldung fehlschlägt. Unter Windows wird bei Bedarf der native WAM-Kontodialog
+verwendet; MFA und Firmenrichtlinien bleiben wirksam.
+
+**Prototyp:** Echte Azure-Zugriffe und das Verhalten der nativen WAM-Anmeldung mit
+einem Firmenkonto müssen auf dem Arbeitsrechner getestet werden. Offline-Tests
+sind keine Bestätigung für Tenant-Policies, Consent oder tatsächliches Windows-SSO.
 
 ## Im Projekt verwenden
-
-Voraussetzungen: aktuelles mise mit Backend-Plugin-Unterstützung und Git-Zugriff auf
-dieses private Repository. Lokal getestet mit mise **2026.10.3**. Unter Windows ist
-PowerShell erforderlich; der Launcher erwartet mises standardmäßige Inline-Shell
-`cmd /c`. Ein PowerShell-Terminal als äußere Shell ist dabei völlig in Ordnung.
 
 ```toml
 [plugins]
@@ -31,66 +37,106 @@ mise ls-remote azure-ac:mein-tool
 mise exec -- mein-tool --version
 ```
 
-`mise install` installiert das deklarierte Plugin automatisch. Das Plugin verwendet
-mise intern, um **uv 0.13.4** bereitzustellen. uv richtet Python und die durch
-`uv.lock` gesperrten SDK-Abhängigkeiten ein. Es ist kein separat zu installierendes
-Azure-Tool nötig. Beim ersten Start braucht das Netzwerk Zugriff auf die
-mise/uv/Python-Downloadquellen, PyPI, Microsoft Entra und Azure Storage. Vorhandene
-Unternehmens-Proxys und Zertifikatsvorgaben müssen diese Zugriffe erlauben.
+mise installiert das deklarierte Plugin. Der Lua-Hook verwendet mises eingebautes
+GitHub-Backend, um den **fertig gebauten Rust-Helfer 0.2.0** für die exakte Plattform
+zu installieren und mit dessen Prüfsummenprüfung auszuführen. Nutzer brauchen
+keinen Rust-Compiler. Voraussetzungen sind Git, mise mit Backend-Plugin-Support
+(lokaler Referenzstand: **2026.10.3**) und Zugriff auf das private Repository.
+Der Windows-Launcher verwendet mises Standard-Inline-Shell `cmd /c`; ein äußeres
+PowerShell-Terminal ist kein Problem. Es werden keine PowerShell-Skripte benötigt.
 
-Der Plugin-Code wird pro Benutzer installiert; die Deklaration liegt im Projekt.
-Für produktive Nutzung `#main` durch einen geprüften vollständigen Commit-SHA
-ersetzen. Bei geänderter Plugin-Revision eine bereits installierte Kopie explizit
-mit `mise plugins install --force azure-ac` erneuern.
+**Bootstrap:** Dafür muss das GitHub-Release `v0.2.0` mit den unten beschriebenen
+Assets veröffentlicht sein. Ein reiner Git-Checkout ersetzt kein Binary-Release.
+Bis zur ersten Veröffentlichung den lokalen Helfer wie unter „Entwickeln“ setzen.
+Für private Release-Downloads zusätzlich einen passenden `GITHUB_TOKEN` oder
+`GH_TOKEN` bereitstellen. Git-/SSH-Zugriff auf das Plugin allein berechtigt nicht
+automatisch zum Download privater GitHub-Release-Assets. GitHub-Zugang und
+Azure-Anmeldung sind unabhängig voneinander; keine Tokens ins Projekt einchecken.
 
-## Anmeldung und Token-Erneuerung
+Für Produktion `#main` durch einen vollständigen geprüften Commit-SHA ersetzen.
+Eine schon installierte Plugin-Kopie bei geändertem Ref explizit erneuern:
+`mise plugins install --force azure-ac`.
 
-- **Natives Windows:** offizielles `azure-identity-broker`, WAM und bevorzugt das
-  bereits verbundene Windows-Konto. Zuerst werden gespeicherte Anmeldungen genutzt.
-  Falls nötig, läuft die Broker-Anmeldung im interaktiven mise-Schritt und kann
-  einen Microsoft-Kontodialog oder MFA zeigen. WSL ist hier **nicht** natives Windows.
-- **Linux/macOS:** Browser-Login über `InteractiveBrowserCredential`. Optional
-  `auth = "device"` für einen ausdrücklich gewählten Device-Code-Login.
-- **Silent Refresh:** Azure Identity/MSAL verwaltet Tokens. Sie werden weder an Lua
-  ausgegeben noch in `mise.toml` oder `mise.lock` geschrieben.
-- **Persistenz:** verschlüsselter SDK-Token-Cache (DPAPI/Keychain/Secret Service).
-  Ohne passenden OS-Schlüsselspeicher schlägt die Anmeldung fehl; es gibt keinen
-  automatischen Klartext-Fallback. Ein separater Account-Auswahldatensatz liegt
-  unter `$XDG_DATA_HOME/mise-azure-ac` bzw. `~/.local/share/mise-azure-ac`; dieser
-  Datensatz enthält Account-Metadaten, aber keine Tokens.
-- **CI:** `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_SECRET` für eine
-  Service-Principal-Anmeldung oder `AZURE_FEDERATED_TOKEN_FILE` für Workload Identity.
-  Managed Identity ist explizit über `auth = "managed"` wählbar. Automatische
-  interaktive Logins sind bei gesetztem `CI` oder `AZURE_AC_NONINTERACTIVE=1` aus.
+## Azure-Bibliotheken statt eigener REST-Implementierung
 
-Das SDK nutzt vorläufig seine Microsoft-Entwicklungs-App. Eine eigene Entra-App ist
-für Produktion empfohlen und kann durch Firmenrichtlinien erforderlich werden:
+- Microsofts **`azure_identity`**: Client Secret, Workload Identity und Managed Identity.
+- Microsofts **`azure_storage_blob`**: Blob-Operationen, Paging, Downloads und Uploads.
+- **Rustls mit Ring**, keine OpenSSL-/Native-TLS-Abhängigkeit für HTTP/TLS.
+- Microsofts **`windows`-Crate**: native WinRT-WAM-API unter Windows. Das offizielle
+  Rust-Identity-SDK hat derzeit keinen entsprechenden interaktiven Credential-Typ;
+  unser schmaler Adapter implementiert dessen `TokenCredential`-Schnittstelle.
+
+Azure CLI dient als Referenz für Entra-/Broker-Verhalten, ist aber weder eine
+Laufzeitabhängigkeit noch eine Bibliothek, die wir einbetten. Unsere native
+WAM-Anbindung ist kein vollständiger Nachbau von MSAL/Azure CLI.
+
+## Windows: Tenant und Firmenkonto
 
 ```toml
 [tools."azure-ac:mein-tool"]
 version = "1.2.3"
 storage_url = "https://firma.blob.core.windows.net/tools"
 tenant_id = "DEINE-TENANT-ID"
-client_id = "DEINE-PUBLIC-CLIENT-APP-ID"
-# auth = "broker"  # Unter Windows bereits die Vorgabe für auth = "auto".
+# client_id = "DEINE-PUBLIC-CLIENT-APP-ID"
+# auth = "broker" # Unter Windows bereits Vorgabe für auto ohne CI-Credentials.
 ```
 
-Die App benötigt für WAM den Redirect
-`ms-appx-web://Microsoft.AAD.BrokerPlugin/CLIENT-ID`; für Browser-Login eine passende
-localhost-Redirect-Konfiguration, für Device Code die Public-Client-Freigabe.
-Der Zugriff auf Azure Storage muss entsprechend freigegeben/consented sein.
-Für diese interaktiven Public-Client-Anmeldungen wird **kein Client-Secret** benötigt.
+Zuerst fragt der Helfer WAM still nach einem Storage-Token. Falls Benutzerinteraktion
+erforderlich ist, fordert Lua einen sichtbaren Login-Schritt an. WAM verwaltet
+Anmeldung, Token-Persistenz und stille Token-Erneuerung; unser Helfer schreibt keine
+Tokens auf die Platte und gibt sie niemals an Lua oder auf stdout aus. Nur die
+gewählte OS-Account-ID wird unter `%LOCALAPPDATA%/mise-azure-ac` pro Tenant und
+Client-ID gespeichert, damit weitere Aufrufe nicht still auf ein anderes Konto wechseln.
 
-**Wichtig:** Aus einer Blob-URL wird kein Tenant-/Subscription-Auswahlmenü wie in
-Azure CLI abgeleitet. Normalerweise genügt der Organisations-Login; bei mehreren
-Tenants, Gastkonten oder Richtlinien `tenant_id` explizit setzen. MFA und Conditional
-Access lassen sich nicht umgehen und können erneute Interaktion verlangen.
+Vorläufiger Entwicklungs-Client ist `04b07795-8ddb-461a-bbee-02f9e1bf7b46`, wie beim
+bisherigen Prototyp. Das garantiert keine Freigabe durch eine Organisation. Für
+Produktion ist eine eigene freigegebene Public-Client-App empfohlen. Die konkrete
+App-/Redirect-Konfiguration muss zur nativen WAM-API passen; die MSAL-Anleitung
+allein beweist nicht, dass diese direkte WinRT-Anbindung damit funktioniert.
 
-Zum Lesen braucht das Konto **Storage Blob Data Reader**, zum Hochladen
-**Storage Blob Data Contributor**, jeweils im richtigen Scope. Eine reine
-Management-Plane-Rolle wie `Reader` genügt nicht.
+Eine Storage-URL liefert kein Subscription-/Tenant-Auswahlmenü. Bei Gastkonten,
+mehreren Tenants oder Richtlinien `tenant_id` explizit setzen. WSL gilt als Linux
+und verwendet diesen Windows-Broker nicht. `AZURE_AC_NONINTERACTIVE=1` verbietet
+einen interaktiven WAM-Dialog; eine bestehende stille Anmeldung kann weiterarbeiten.
 
-## Erwartete Blob-Struktur
+## Linux und CI
+
+**Workload Identity** (bevorzugt, kein langlebiges Secret):
+
+```text
+AZURE_TENANT_ID=...
+AZURE_CLIENT_ID=...
+AZURE_FEDERATED_TOKEN_FILE=/pfad/zur/gueltigen-oidc-assertion
+```
+
+Die CI-Plattform muss die gültige Assertion-Datei bereitstellen und ihre Rotation
+sicherstellen. Das Plugin richtet keine Entra-Föderation ein und erzeugt nicht von
+selbst einen GitHub-/Azure-Pipelines-OIDC-Token.
+
+Alternativ **Service Principal**:
+
+```text
+AZURE_TENANT_ID=...
+AZURE_CLIENT_ID=...
+AZURE_CLIENT_SECRET=... # Nur aus dem CI-Secret-Store.
+```
+
+`auth = "auto"` erkennt diese Umgebungsvariablen; bei beiden Verfahren gleichzeitig
+hat das Client-Secret Vorrang. Mit `auth = "environment"` oder `auth = "workload"`
+lässt sich das Verfahren explizit festlegen. **Managed Identity** ist ausdrücklich
+über `auth = "managed"` wählbar, optional mit `managed_identity_client_id`.
+
+Das SDK übernimmt die Access-Token-Erneuerung im laufenden Prozess. Zwischen
+Helfer-Aufrufen wird die CI-Identität erneut verwendet, ohne persistenten lokalen
+Token-Cache. Bei gesetztem `CI` startet kein interaktiver Login und `auto` ohne
+CI-Credentials verwendet nicht versehentlich ein Windows-Privatkonto.
+
+Lesen benötigt **Storage Blob Data Reader**, Schreiben **Storage Blob Data
+Contributor**. Reine Management-Plane-Rechte wie `Reader` reichen nicht.
+
+## Blob-Layout und Installation
+
+Das Format aus dem Python-Prototyp bleibt erhalten:
 
 ```text
 Container tools
@@ -102,7 +148,7 @@ Container tools
         └── mein-tool-linux-amd64.tar.gz
 ```
 
-`mein-tool/index.json` führt Versionen **älteste zuerst** auf:
+`index.json` (älteste Version zuerst, nur tatsächlich veröffentlichte Versionen):
 
 ```json
 {
@@ -110,10 +156,8 @@ Container tools
 }
 ```
 
-Nur tatsächlich veröffentlichte Versionen aufführen. Optional akzeptiert der
-Leser auch Objekte mit `version` und RFC-3339-`created_at`.
-
-`mein-tool/1.2.3/release.json`:
+Optional werden Einträge mit `version` und RFC-3339-`created_at` durchgereicht.
+`release.json`:
 
 ```json
 {
@@ -130,74 +174,85 @@ Leser auch Objekte mit `version` und RFC-3339-`created_at`.
 }
 ```
 
-Weitere mögliche Schlüssel sind z. B. `darwin-arm64` und `windows-arm64`, sofern
-die jeweilige Plattform und die SDK-Abhängigkeiten unterstützt werden. Linux-musl
-wird derzeit nicht von GNU/Linux unterschieden: dafür getrennte Toolnamen nutzen.
+Archive enthalten direkt `bin/`, unter Windows z. B. `bin/mein-tool.exe`.
+Unterstützt: ZIP, tar.gz, tar.xz, tar.bz2. Der Helfer prüft SHA-256, entpackt in ein
+temporäres Staging-Verzeichnis und finalisiert die Installation atomar. Traversal,
+Links, Spezialdateien, doppelte Archivpfade und problematische Windows-Dateinamen
+werden abgewiesen. Vorhandene nichtleere Installationsverzeichnisse bleiben erhalten.
+Grenzen: 100.000 Archiveinträge, insgesamt 4 GiB entpackte Daten, 16 MiB für JSON/Text.
 
-Archive müssen `bin/` direkt an der Wurzel enthalten, beispielsweise
-`bin/mein-tool.exe` unter Windows. Unterstützt sind `.zip`, `.tar.gz`, `.tar.xz`
-und `.tar.bz2`. Prüfsummen werden **vor** dem Entpacken geprüft. Absolute Pfade,
-Traversal, Links und Spezialdateien werden abgewiesen. Archive mit Symlinks müssen
-für diesen ersten Prototyp mit regulären Dateien neu gepackt werden.
-
-Prüfsumme unter PowerShell:
-
-```powershell
-(Get-FileHash .\mein-tool-windows-amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
-```
-
-Prüfsumme und Archiv stammen aus demselben Storage: Das schützt gegen Korruption,
-nicht gegen einen kompromittierten Herausgeber. Backend-Plugins schreiben aktuell
-keine Artefakt-URLs oder Prüfsummen in `mise.lock` und prüfen keine Attestierungen.
-Veröffentlichte Versionen deshalb organisatorisch unveränderlich halten.
+Die Prüfsumme liegt im selben Storage und schützt nicht gegen einen kompromittierten
+Herausgeber. Backend-Plugin-Artefakte erhalten keine URL-/Prüfsummen-Einträge in
+`mise.lock`; veröffentlichte Tool-Versionen deshalb unveränderlich halten.
+Linux-Tool-Artefakte unterscheiden im Manifest derzeit nicht zwischen glibc/musl;
+das ist unabhängig vom statischen Build des **Helfers**.
 
 ## Dateien verwalten
 
-Im geklonten Plugin-Repository, mit derselben SDK-Anmeldung:
+Mit installiertem Release-Binary `azure-ac` oder im Entwickler-Checkout über
+`mise run blob --` statt `azure-ac`:
 
 ```sh
-mise run blob -- --storage-url https://firma.blob.core.windows.net/tools login
-mise run blob -- --storage-url https://firma.blob.core.windows.net/tools list --prefix mein-tool/
-mise run blob -- --storage-url https://firma.blob.core.windows.net/tools read mein-tool/index.json
-mise run blob -- --storage-url https://firma.blob.core.windows.net/tools download notes.txt ./notes.txt
-mise run blob -- --storage-url https://firma.blob.core.windows.net/tools upload notes.txt ./notes.txt
+azure-ac --storage-url https://firma.blob.core.windows.net/tools login
+azure-ac --storage-url https://firma.blob.core.windows.net/tools list --prefix mein-tool/
+azure-ac --storage-url https://firma.blob.core.windows.net/tools read mein-tool/index.json
+azure-ac --storage-url https://firma.blob.core.windows.net/tools download notes.txt ./notes.txt
+azure-ac --storage-url https://firma.blob.core.windows.net/tools upload notes.txt ./notes.txt
 ```
 
-`--tenant-id`, `--client-id` und `--auth` ebenfalls **vor** dem Unterkommando angeben.
-`read` gibt UTF-8-Text als JSON-Feld `text` aus. Downloads überschreiben keine lokalen
-Dateien. Uploads überschreiben keine Blobs, außer mit dem expliziten Flag
-`upload BLOB DATEI --overwrite`.
+`--tenant-id`, `--client-id` und `--auth` stehen vor dem Unterkommando. Downloads
+überschreiben keine lokalen Dateien. Uploads überschreiben nur mit ausdrücklich
+gesetztem `upload BLOB DATEI --overwrite`. Der erste Rust-Stand begrenzt Uploads auf
+256 MiB. `read` liefert UTF-8 als JSON-Feld `text`.
 
-Für eine erste Veröffentlichung: Archiv hochladen, danach `release.json`, zuletzt
-`index.json`. Für parallele Veröffentlichungen gibt es noch keinen atomaren
-Publisher; ein blind überschriebenes `index.json` könnte andere Änderungen verlieren.
-
-Aktuell sind nur HTTPS-URLs der öffentlichen Azure-Cloud mit einem Containerpfad
-erlaubt. Keine SAS-URLs, Storage Keys, beliebigen Hosts oder Sovereign Clouds.
+Veröffentlichen: Archiv, dann `release.json`, zuletzt `index.json` hochladen.
+Ein transaktionssicherer paralleler Publisher ist noch nicht enthalten.
+Erlaubt sind nur öffentliche Azure-Cloud-HTTPS-Endpunkte mit Containerpfad, keine
+SAS-URLs, Storage Keys, beliebigen Hosts oder Sovereign Clouds.
 
 ## Entwickeln und prüfen
 
 ```sh
 mise trust
 mise install
+mise run build
 mise run check
 ```
 
-`.editorconfig` und Ruff konfigurieren Tabs mit Breite 4 und Double Quotes.
-Die Tests verwenden ausschließlich temporären Mock-Storage und isolierte
-mise-Datenverzeichnisse; keine echten Azure-Zugangsdaten erforderlich.
-Der Integrationstest läuft durch die echte mise/Lua/uv/Python-Kette und benötigt
-bereits installiertes uv, wie es `mise install` für dieses Repository bereitstellt.
+Nur Entwickler benötigen Rust (mise pinnt **1.99.1**). `.editorconfig` und rustfmt
+verwenden echte Tabs, Breite 4, und Rust-Strings mit Double Quotes. Ein temporärer
+Mock-Helfer ist ein eigenes Rust-Example, kein Auth-Bypass im Produktionsbinary.
+Die Tests prüfen auch die echte mise → Lua → Rust → Mock-Storage-Kette.
 
-Struktur:
+Lokalen Helfer vor dem ersten Release verwenden:
+
+```sh
+export AZURE_AC_HELPER="/ABSOLUTER/PFAD/az-mise-plugin/target/debug/azure-ac"
+```
+
+Unter Windows nach `mise run build`:
+
+```powershell
+$env:AZURE_AC_HELPER = "C:\ABSOLUTER\PFAD\az-mise-plugin\target\x86_64-pc-windows-msvc\debug\azure-ac.exe"
+```
+
+## Fertige Binaries und statisches Linken
+
+`.github/workflows/build.yml` testet und baut Linux x64/ARM64 (musl) und Windows x64
+(MSVC). Auf Branch-Pushes gibt es herunterladbare CI-Artefakte; ein ausdrücklich
+gepushter `v*`-Tag veröffentlicht anschließend ein GitHub-Release mit:
 
 ```text
-metadata.lua              Plugin-Metadaten
-hooks/                    mise-Backend-Hooks
-lib/azure.lua             Launcher und interaktiver Login-Schritt
-scripts/launch.ps1        Windows-Launcher
-src/azure_ac.py           Azure Identity, Blob-Zugriff, SHA-256 und Installation
-tests/                    Offline-Tests und ausschließlich testseitige Mock-Injektion
-examples/mise.toml        Beispiel für ein konsumierendes Projekt
-docs/workplace-test.md    Checkliste für den Arbeitsrechner
+azure-ac-linux-amd64-musl.tar.gz
+azure-ac-linux-arm64-musl.tar.gz
+azure-ac-windows-amd64.zip
+SHA256SUMS
 ```
+
+Linux-Binaries werden auf fehlende ELF-Interpreter und dynamische Abhängigkeiten
+geprüft. Windows verwendet `+crt-static` mit explizitem Target; **Windows-System-DLLs
+und WAM bleiben notwendige Betriebssystemkomponenten**. Unser Code benötigt keine
+zusätzliche MSAL-DLL. Rustls verwendet den System-Zertifikatsspeicher; auf Linux
+müssen passende CA-Zertifikate vorhanden sein, auch im schlanken CI-Container.
+
+Siehe [Testcheckliste](docs/workplace-test.md) für den Arbeitsrechner und CI-Test.

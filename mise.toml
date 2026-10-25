@@ -1,13 +1,23 @@
 [tools]
-uv = "0.13.4"
+rust = "1.99.1"
+
+[tasks.build]
+description = "Build the native Rust helper"
+run = "cargo build --locked{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}"
 
 [tasks.test]
-description = "Run offline unit tests"
-run = "uv run --locked python -m unittest discover -s tests -v"
+description = "Run Rust unit and real mise/Lua integration tests without Azure access"
+run = [
+	"cargo build --locked --example mock_helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
+	"cargo test --locked --all-targets{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
+]
 
 [tasks.lint]
-description = "Check Python formatting and lint"
-run = ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
+description = "Check Rust formatting and lint"
+run = [
+	"cargo fmt --all -- --check",
+	"cargo clippy --locked --all-targets{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %} -- -D warnings",
+]
 
 [tasks.check]
 description = "Run all local checks"
@@ -15,4 +25,4 @@ depends = ["test", "lint"]
 
 [tasks.blob]
 description = "List, read, download or upload blobs using plugin authentication"
-run = "uv run --quiet --locked python src/azure_ac.py"
+run = "cargo run --quiet --locked{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %} --"

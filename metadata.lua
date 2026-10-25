@@ -1,5 +1,5 @@
 PLUGIN = {
 	name = "azure-ac",
-	version = "0.1.0",
-	description = "Install private Azure Blob artifacts with SDK-managed authentication",
+	version = "0.2.0",
+	description = "Azure Blob artifacts with a Rust helper, Windows WAM and Linux CI credentials",
 }
