@@ -137,7 +137,7 @@ Contributor**. Reine Management-Plane-Rechte wie `Reader` reichen nicht.
 
 ## Blob-Layout und Installation
 
-Das Format aus dem Python-Prototyp bleibt erhalten:
+Tools verwenden das folgende Blob-Layout:
 
 ```text
 Container tools
