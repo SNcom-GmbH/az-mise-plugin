@@ -1,7 +1,7 @@
 # Azure Blob Backend für mise
 
 Tools aus privaten Azure Blob Containern installieren: **minimales Lua für mise,
-alles Weitere in Rust**. Keine Azure CLI, kein Python/uv, kein Browser-Login.
+alles Weitere in Rust**. Keine Azure CLI, keine zusätzliche Sprachlaufzeit und kein Browser-Login.
 
 ## Plattformen und Anmeldung
 
@@ -9,7 +9,8 @@ alles Weitere in Rust**. Keine Azure CLI, kein Python/uv, kein Browser-Login.
 | --- | --- | --- |
 | Windows x64 | natives Entra-/WAM-SSO, optional CI-Identitäten | MSVC mit statisch gelinkter C-Runtime |
 | Linux x64 | CI: Workload Identity, Service Principal, Managed Identity | statischer musl-Build |
-| Linux ARM64 | dieselben CI-Anmeldeverfahren | statischer musl-Build |
+
+Unterstützt werden ausschließlich Windows und Linux auf **x86-64 (AMD64)**.
 
 **Linux ist bewusst CI-only.** Es gibt weder Browser- noch Device-Code-Login und
 keinen automatischen Wechsel auf andere Identitäten, wenn die konfigurierte
@@ -239,13 +240,12 @@ $env:AZURE_AC_HELPER = "C:\ABSOLUTER\PFAD\az-mise-plugin\target\x86_64-pc-window
 
 ## Fertige Binaries und statisches Linken
 
-`.github/workflows/build.yml` testet und baut Linux x64/ARM64 (musl) und Windows x64
+`.github/workflows/build.yml` testet und baut Linux x86-64 (musl) und Windows x86-64
 (MSVC). Auf Branch-Pushes gibt es herunterladbare CI-Artefakte; ein ausdrücklich
 gepushter `v*`-Tag veröffentlicht anschließend ein GitHub-Release mit:
 
 ```text
 azure-ac-linux-amd64-musl.tar.gz
-azure-ac-linux-arm64-musl.tar.gz
 azure-ac-windows-amd64.zip
 SHA256SUMS
 ```

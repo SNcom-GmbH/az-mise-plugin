@@ -199,7 +199,7 @@ async fn missing_platform_and_bin_are_rejected() -> Result<()> {
 		.expect_err("must fail");
 	assert!(error.to_string().contains("bin/"));
 	let mut r = r;
-	r.platform = Some("windows-arm64".into());
+	r.platform = Some("unsupported-platform".into());
 	assert!(
 		dispatch(&FileStorage(root.path().into()), &r)
 			.await

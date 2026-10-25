@@ -63,7 +63,6 @@ fn real_mise_lua_rust_install_and_silent_reuse() -> Result<()> {
 	let os = if cfg!(windows) { "windows" } else { "linux" };
 	let arch = match env::consts::ARCH {
 		"x86_64" => "amd64",
-		"aarch64" => "arm64",
 		other => anyhow::bail!("Unsupported test architecture {other}"),
 	};
 	let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));

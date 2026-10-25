@@ -4,7 +4,6 @@ local M = {}
 
 local assets = {
 	["linux-amd64"] = "azure-ac-linux-amd64-musl.tar.gz",
-	["linux-arm64"] = "azure-ac-linux-arm64-musl.tar.gz",
 	["windows-amd64"] = "azure-ac-windows-amd64.zip",
 }
 
@@ -16,7 +15,7 @@ function M.run(action, ctx)
 	local platform = RUNTIME.osType .. "-" .. RUNTIME.archType
 	local asset = assets[platform]
 	if not asset then
-		error("azure-ac has no helper build for " .. platform)
+		error("azure-ac supports only Linux and Windows x86-64; no helper build for " .. platform)
 	end
 	local env = {
 		MISE_NO_CONFIG = "1",
