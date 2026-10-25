@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use azure_core::{
 	credentials::TokenCredential,
-	http::{ClientOptions, RequestContent, Transport},
+	http::{Body, ClientOptions, Transport},
 };
 use azure_storage_blob::{
 	BlobContainerClient, BlobContainerClientOptions,
@@ -89,17 +89,19 @@ impl Storage for AzureStorage {
 	}
 
 	async fn upload(&self, blob: &str, file: &Path, overwrite: bool) -> Result<()> {
-		ensure!(
-			fs::metadata(file)?.len() <= 256 * 1024 * 1024,
-			"Prototype upload limit is 256 MiB"
-		);
+		let stream = azure_storage_blob::stream::tokio::FileStream::builder(
+			tokio::fs::File::open(file).await?,
+		)
+		.build()
+		.await
+		.map_err(sdk_error)?;
 		let options = BlobClientUploadOptions {
 			if_none_match: (!overwrite).then(|| "*".into()),
 			..Default::default()
 		};
 		self.0
 			.blob_client(relative(blob)?)
-			.upload(RequestContent::from(fs::read(file)?), Some(options))
+			.upload(Body::from(stream).into(), Some(options))
 			.await
 			.map_err(sdk_error)?;
 		Ok(())

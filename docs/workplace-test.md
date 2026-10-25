@@ -3,8 +3,10 @@
 ## Windows
 
 1. Plugin-Repository klonen und GitHub-Zugriff sicherstellen.
-2. Entweder das Windows-Release-Binary verwenden oder im Checkout `mise trust`,
-   `mise install`, `mise run build`, `mise run check` ausführen. Beim lokalen Build
+2. Das Windows-ZIP aus einem erfolgreichen GitHub-Actions-Lauf oder Release
+   herunterladen und entpacken. `AZURE_AC_HELPER` auf die enthaltene `azure-ac.exe`
+   setzen; dafür ist kein Rust-Compiler erforderlich. Alternativ im Checkout
+   `mise trust`, `mise install`, `mise run build`, `mise run check` ausführen und
    `AZURE_AC_HELPER` auf `target/x86_64-pc-windows-msvc/debug/azure-ac.exe` setzen.
 3. `examples/mise.toml` in ein separates Testprojekt kopieren und Account/Container
    ersetzen. Bei mehreren Tenants `tenant_id` explizit ergänzen.

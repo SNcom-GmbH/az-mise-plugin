@@ -39,6 +39,8 @@ jobs:
                   sudo apt-get install --yes musl-tools
             - name: "Install Rust target"
               run: "rustup target add ${{ matrix.target }}"
+            - name: "Install check components"
+              run: "rustup component add rustfmt clippy"
             - name: "Formatting"
               run: "cargo fmt --all -- --check"
             - name: "Build test-only helper"

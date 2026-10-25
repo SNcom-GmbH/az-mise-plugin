@@ -47,7 +47,8 @@ PowerShell-Terminal ist kein Problem. Es werden keine PowerShell-Skripte benöti
 
 **Bootstrap:** Dafür muss das GitHub-Release `v0.2.0` mit den unten beschriebenen
 Assets veröffentlicht sein. Ein reiner Git-Checkout ersetzt kein Binary-Release.
-Bis zur ersten Veröffentlichung den lokalen Helfer wie unter „Entwickeln“ setzen.
+Bis zur ersten Veröffentlichung den Helfer aus einem erfolgreichen CI-Artefakt
+entpacken oder lokal bauen und `AZURE_AC_HELPER` auf das Binary setzen.
 Für private Release-Downloads zusätzlich einen passenden `GITHUB_TOKEN` oder
 `GH_TOKEN` bereitstellen. Git-/SSH-Zugriff auf das Plugin allein berechtigt nicht
 automatisch zum Download privater GitHub-Release-Assets. GitHub-Zugang und
@@ -202,8 +203,8 @@ azure-ac --storage-url https://firma.blob.core.windows.net/tools upload notes.tx
 
 `--tenant-id`, `--client-id` und `--auth` stehen vor dem Unterkommando. Downloads
 überschreiben keine lokalen Dateien. Uploads überschreiben nur mit ausdrücklich
-gesetztem `upload BLOB DATEI --overwrite`. Der erste Rust-Stand begrenzt Uploads auf
-256 MiB. `read` liefert UTF-8 als JSON-Feld `text`.
+gesetztem `upload BLOB DATEI --overwrite`. Uploads und Downloads streamen über das
+Azure-SDK, statt ganze Archive in den RAM zu laden. `read` liefert UTF-8 als JSON-Feld `text`.
 
 Veröffentlichen: Archiv, dann `release.json`, zuletzt `index.json` hochladen.
 Ein transaktionssicherer paralleler Publisher ist noch nicht enthalten.
