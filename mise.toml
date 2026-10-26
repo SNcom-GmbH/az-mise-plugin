@@ -1,5 +1,8 @@
-[tools]
-rust = { version = "1.99.1", profile = "minimal", components = ["rustfmt", "clippy"], targets = "{% if env.MISE_CI_TARGET is defined %}{{ env.MISE_CI_TARGET }}{% endif %}" }
+[tools.rust]
+version = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = "{% if env.MISE_CI_TARGET is defined %}{{ env.MISE_CI_TARGET }}{% endif %}"
 
 [vars]
 # CI sets MISE_CI_TARGET so every task uses the matrix target. Locally this is
