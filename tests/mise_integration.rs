@@ -168,7 +168,7 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 	fs::write(
 		project.join("mise.toml"),
 		format!(
-			"[plugins]\nazure-ac = {}\n[tools]\n\"azure-ac:hello\" = {{ version = \"1.0.0\", storage_url = \"https://account.blob.core.windows.net/tools\" }}\n",
+			"[plugins]\nazure-blob = {}\n[tools]\n\"azure-blob:hello\" = {{ version = \"1.0.0\", storage_url = \"https://account.blob.core.windows.net/tools\" }}\n",
 			toml::Value::String(repo.to_string_lossy().into_owned())
 		),
 	)?;
@@ -180,7 +180,7 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 			project.to_string_lossy().into_owned(),
 		),
 		(
-			"AZURE_AC_HELPER".into(),
+			"AZURE_BLOB_HELPER".into(),
 			helper.to_string_lossy().into_owned(),
 		),
 		(
@@ -219,7 +219,7 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 			);
 		} else {
 			environment.insert(
-				"AZURE_AC_STORAGE_TOKEN".into(),
+				"AZURE_BLOB_STORAGE_TOKEN".into(),
 				"integration-storage-token".into(),
 			);
 			if mode == "token" {
@@ -239,19 +239,19 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 		fs::copy(
 			&helper,
 			fixture.join(if cfg!(windows) {
-				"azure-ac.exe"
+				"azure-blob.exe"
 			} else {
-				"azure-ac"
+				"azure-blob"
 			}),
 		)?;
 		fs::write(
 			helper_backend.join(".mise.backend.toml"),
 			"short = \"github:SNcom-GmbH/az-mise-plugin\"\nfull = \"github:SNcom-GmbH/az-mise-plugin\"\n",
 		)?;
-		environment.remove("AZURE_AC_HELPER");
+		environment.remove("AZURE_BLOB_HELPER");
 	}
 	if matches!(auth_mode, Some("required" | "stderr")) {
-		let failure = mise(&project, &environment, &["ls-remote", "azure-ac:hello"])?;
+		let failure = mise(&project, &environment, &["ls-remote", "azure-blob:hello"])?;
 		assert_no_secret(&failure);
 		assert!(!failure.status.success());
 		let error = String::from_utf8_lossy(&failure.stderr);
@@ -264,7 +264,7 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 		return Ok(());
 	}
 	// The project declaration installs the local plugin automatically; no manual link step.
-	let versions = mise(&project, &environment, &["ls-remote", "azure-ac:hello"])?;
+	let versions = mise(&project, &environment, &["ls-remote", "azure-blob:hello"])?;
 	assert_no_secret(&versions);
 	assert_eq!(success(versions)?.trim(), "1.0.0");
 	if auth_mode.is_some() {
@@ -297,17 +297,17 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 		success(mise(&project, &environment, args)?)?.trim(),
 		"from-mock"
 	);
-	environment.insert("AZURE_AC_NONINTERACTIVE".into(), "1".into());
+	environment.insert("AZURE_BLOB_NONINTERACTIVE".into(), "1".into());
 	success(mise(
 		&project,
 		&environment,
-		&["cache", "clear", "azure-ac:hello"],
+		&["cache", "clear", "azure-blob:hello"],
 	)?)?;
 	assert!(
 		success(mise(
 			&project,
 			&environment,
-			&["ls-remote", "azure-ac:hello"]
+			&["ls-remote", "azure-blob:hello"]
 		)?)?
 		.contains("1.0.0")
 	);
@@ -315,9 +315,9 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 	success(mise(
 		&project,
 		&environment,
-		&["cache", "clear", "azure-ac:hello"],
+		&["cache", "clear", "azure-blob:hello"],
 	)?)?;
-	let failure = mise(&project, &environment, &["ls-remote", "azure-ac:hello"])?;
+	let failure = mise(&project, &environment, &["ls-remote", "azure-blob:hello"])?;
 	assert!(!failure.status.success());
 	assert!(String::from_utf8_lossy(&failure.stderr).contains("sign-in required"));
 	Ok(())

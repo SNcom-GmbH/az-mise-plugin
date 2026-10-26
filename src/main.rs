@@ -1,7 +1,7 @@
 mod command;
 
 use anyhow::{Context, Result};
-use azure_ac::{
+use azure_blob::{
 	auth::{self, AuthenticationRequired},
 	config::{Options, Request, noninteractive},
 	storage::AzureStorage,
@@ -12,10 +12,10 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() {
-	azure_ac::initialize_tls();
+	azure_blob::initialize_tls();
 	if let Err(error) = run().await {
 		// SDK errors omit response bodies; also redact caller-controlled context.
-		eprintln!("azure-ac: {}", auth::redact(&format!("{error:#}")));
+		eprintln!("azure-blob: {}", auth::redact(&format!("{error:#}")));
 		std::process::exit(1);
 	}
 }
@@ -24,7 +24,7 @@ async fn run() -> Result<()> {
 	let cli = Cli::parse();
 	let hook = matches!(cli.command, Command::Hook);
 	let request: Request = if hook {
-		serde_json::from_str(&std::env::var("AZURE_AC_REQUEST").context("Missing hook request")?)
+		serde_json::from_str(&std::env::var("AZURE_BLOB_REQUEST").context("Missing hook request")?)
 			.context("Invalid hook request")?
 	} else {
 		let mut value = json!({
@@ -50,6 +50,14 @@ async fn run() -> Result<()> {
 				file,
 				overwrite,
 			} => json!({"action": "upload", "blob": blob, "file": file, "overwrite": overwrite}),
+			Command::Publish {
+				tool,
+				version,
+				file,
+				platform,
+			} => {
+				json!({"action": "publish", "tool": tool, "version": version, "file": file, "platform": platform})
+			}
 			Command::Hook => unreachable!(),
 		};
 		value
@@ -59,7 +67,8 @@ async fn run() -> Result<()> {
 		serde_json::from_value(value)?
 	};
 	let url = request.options.validate()?;
-	let login = request.action == "login" || std::env::var("AZURE_AC_LOGIN").as_deref() == Ok("1");
+	let login =
+		request.action == "login" || std::env::var("AZURE_BLOB_LOGIN").as_deref() == Ok("1");
 	let credential = match auth::credential(&request.options, login).await {
 		Ok(credential) => credential,
 		Err(error) if error.is::<AuthenticationRequired>() && hook && !login => {
@@ -81,7 +90,7 @@ async fn run() -> Result<()> {
 		return Ok(());
 	}
 	let storage = AzureStorage::new(url, credential)?;
-	let result = azure_ac::dispatch(&storage, &request).await?;
+	let result = azure_blob::dispatch(&storage, &request).await?;
 	println!("{}", serde_json::to_string(&result)?);
 	Ok(())
 }

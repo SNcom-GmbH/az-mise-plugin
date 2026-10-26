@@ -1,4 +1,4 @@
-use azure_ac::config::DEFAULT_CLIENT;
+use azure_blob::config::DEFAULT_CLIENT;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -48,5 +48,14 @@ pub(crate) enum Command {
 		file: PathBuf,
 		#[arg(long)]
 		overwrite: bool,
+	},
+	/// Package a binary and publish a tool version to Azure Blob Storage.
+	Publish {
+		tool: String,
+		version: String,
+		/// Binary to install under bin/, keeping its filename.
+		file: PathBuf,
+		#[arg(long, value_parser = ["linux-amd64", "windows-amd64"])]
+		platform: String,
 	},
 }

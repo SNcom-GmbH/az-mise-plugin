@@ -18,10 +18,10 @@ jobs:
                 include:
                     - runner: "ubuntu-latest"
                       target: "x86_64-unknown-linux-musl"
-                      asset: "azure-ac-linux-amd64-musl.tar.gz"
+                      asset: "azure-blob-linux-amd64-musl.tar.gz"
                     - runner: "windows-latest"
                       target: "x86_64-pc-windows-msvc"
-                      asset: "azure-ac-windows-amd64.zip"
+                      asset: "azure-blob-windows-amd64.zip"
         runs-on: "${{ matrix.runner }}"
         timeout-minutes: 25
         steps:
@@ -47,7 +47,7 @@ jobs:
             - name: "Clippy"
               run: "cargo clippy --locked --target ${{ matrix.target }} --all-targets -- -D warnings"
             - name: "Release build"
-              run: "cargo build --locked --release --target ${{ matrix.target }} --bin azure-ac"
+              run: "cargo build --locked --release --target ${{ matrix.target }} --bin azure-blob"
             - name: "Verify and package Linux static executable"
               if: "runner.os == 'Linux'"
               shell: "bash"
@@ -55,7 +55,7 @@ jobs:
                   TARGET: "${{ matrix.target }}"
                   ASSET: "${{ matrix.asset }}"
               run: |
-                  binary="target/$TARGET/release/azure-ac"
+                  binary="target/$TARGET/release/azure-blob"
                   file "$binary"
                   if readelf -l "$binary" | grep -q INTERP; then
                       echo "Unexpected dynamic ELF interpreter"
@@ -67,7 +67,7 @@ jobs:
                   fi
                   "$binary" --version
                   mkdir dist
-                  tar -czf "dist/$ASSET" -C "target/$TARGET/release" azure-ac
+                  tar -czf "dist/$ASSET" -C "target/$TARGET/release" azure-blob
             - name: "Package Windows static-CRT executable"
               if: "runner.os == 'Windows'"
               shell: "pwsh"
@@ -75,7 +75,7 @@ jobs:
                   TARGET: "${{ matrix.target }}"
                   ASSET: "${{ matrix.asset }}"
               run: |
-                  $binary = "target/$env:TARGET/release/azure-ac.exe"
+                  $binary = "target/$env:TARGET/release/azure-blob.exe"
                   & $binary --version
                   New-Item -ItemType Directory dist
                   Compress-Archive -Path $binary -DestinationPath "dist/$env:ASSET"
@@ -95,8 +95,8 @@ jobs:
                   merge-multiple: true
             - name: "Verify Windows needs no extra CRT or MSAL runtime DLL"
               run: |
-                  unzip -q dist/azure-ac-windows-amd64.zip -d windows
-                  objdump -p windows/azure-ac.exe > imports.txt
+                  unzip -q dist/azure-blob-windows-amd64.zip -d windows
+                  objdump -p windows/azure-blob.exe > imports.txt
                   grep "DLL Name" imports.txt
                   if grep -Ei "DLL Name:.*(vcruntime|msvcp|ucrtbase|api-ms-win-crt|msalruntime|libssl|libcrypto|openssl)" imports.txt; then
                       echo "Unexpected runtime DLL dependency"
@@ -116,7 +116,7 @@ jobs:
                   merge-multiple: true
             - name: "Checksums"
               working-directory: "dist"
-              run: "sha256sum azure-ac-* > SHA256SUMS"
+              run: "sha256sum azure-blob-* > SHA256SUMS"
             - name: "Publish tagged helper release"
               env:
                   GH_TOKEN: "${{ github.token }}"

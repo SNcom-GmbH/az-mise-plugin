@@ -1,6 +1,6 @@
 [package]
-name = "azure-ac"
-version = "0.4.0"
+name = "azure-blob"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -8,6 +8,11 @@ description = "Rust helper for the Azure Blob mise backend"
 license = "MIT"
 repository = "https://github.com/SNcom-GmbH/az-mise-plugin"
 homepage = "https://github.com/SNcom-GmbH/az-mise-plugin"
+
+# A test-only executable, kept out of production binary builds and installs.
+[[example]]
+name = "mock_helper"
+path = "tests/helpers/mock_helper.rs"
 
 [dependencies]
 anyhow = "1"

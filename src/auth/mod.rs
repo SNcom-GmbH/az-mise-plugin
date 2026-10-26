@@ -13,7 +13,7 @@ use azure_identity::{
 };
 use std::{env, sync::Arc};
 
-pub const STORAGE_TOKEN_ENV: &str = "AZURE_AC_STORAGE_TOKEN";
+pub const STORAGE_TOKEN_ENV: &str = "AZURE_BLOB_STORAGE_TOKEN";
 
 /// A caller-owned bearer token. No discovery, refresh, or identity fallback.
 #[derive(Debug)]
@@ -29,7 +29,7 @@ impl StorageTokenCredential {
 				&& value
 					.bytes()
 					.all(|b| b.is_ascii_alphanumeric() || b"-._~+/".contains(&b)),
-			"AZURE_AC_STORAGE_TOKEN must contain a nonempty bearer token without whitespace or a Bearer prefix"
+			"AZURE_BLOB_STORAGE_TOKEN must contain a nonempty bearer token without whitespace or a Bearer prefix"
 		);
 		Ok(Self(Secret::new(token)))
 	}
@@ -183,7 +183,9 @@ async fn credential_with_environment_options(
 	// before considering auth modes, CI guards, broker or any Azure identity.
 	match env::var(STORAGE_TOKEN_ENV) {
 		Ok(token) => return Ok(Arc::new(StorageTokenCredential::new(token)?)),
-		Err(env::VarError::NotUnicode(_)) => bail!("AZURE_AC_STORAGE_TOKEN must be valid Unicode"),
+		Err(env::VarError::NotUnicode(_)) => {
+			bail!("AZURE_BLOB_STORAGE_TOKEN must be valid Unicode")
+		}
 		Err(env::VarError::NotPresent) => {}
 	}
 	let mode = options.auth.as_str();
@@ -316,7 +318,7 @@ mod tests {
 			}
 			let output = child
 				.args(["--exact", "auth::tests::environment_authentication_child"])
-				.env("AZURE_AC_TEST_CHILD", mode)
+				.env("AZURE_BLOB_TEST_CHILD", mode)
 				.env("CI", "1")
 				.env("AZURE_TENANT_ID", "integration-tenant")
 				.env("AZURE_CLIENT_ID", "integration-client")
@@ -334,7 +336,7 @@ mod tests {
 	#[tokio::test]
 	async fn environment_authentication_child() -> Result<()> {
 		// Use a child process so tests never mutate shared process credentials.
-		let Ok(mode) = env::var("AZURE_AC_TEST_CHILD") else {
+		let Ok(mode) = env::var("AZURE_BLOB_TEST_CHILD") else {
 			return Ok(());
 		};
 		let options: Options = serde_json::from_value(serde_json::json!({
@@ -395,7 +397,7 @@ mod tests {
 			assert!(
 				error
 					.to_string()
-					.starts_with("AZURE_AC_STORAGE_TOKEN must contain")
+					.starts_with("AZURE_BLOB_STORAGE_TOKEN must contain")
 			);
 		}
 	}

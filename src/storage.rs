@@ -5,11 +5,13 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use azure_core::{
 	credentials::TokenCredential,
-	http::{Body, ClientOptions, Transport},
+	http::{Body, ClientOptions, StatusCode, Transport},
 };
 use azure_storage_blob::{
 	BlobContainerClient, BlobContainerClientOptions,
-	models::{BlobClientUploadOptions, BlobContainerClientListBlobsOptions},
+	models::{
+		BlobClientDownloadResult, BlobClientUploadOptions, BlobContainerClientListBlobsOptions,
+	},
 };
 use futures::TryStreamExt;
 use serde_json::{Value, json};
@@ -19,12 +21,63 @@ use url::Url;
 pub const MAX_LIST_RESULTS: usize = 100_000;
 const MAX_READ_BYTES: usize = 16 * 1024 * 1024;
 
+pub struct VersionedBlob {
+	pub bytes: Vec<u8>,
+	pub etag: String,
+}
+
+#[derive(Debug)]
+pub struct WriteConflict;
+
+impl std::fmt::Display for WriteConflict {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("Conditional blob write failed")
+	}
+}
+impl std::error::Error for WriteConflict {}
+
+fn write_error(error: azure_core::Error) -> anyhow::Error {
+	if let azure_core::error::ErrorKind::HttpResponse {
+		status, error_code, ..
+	} = error.kind()
+		&& (*status == StatusCode::PreconditionFailed
+			|| (*status == StatusCode::Conflict
+				&& error_code.as_deref() == Some("BlobAlreadyExists")))
+	{
+		return anyhow::Error::new(WriteConflict).context(sdk_error(error));
+	}
+	sdk_error(error)
+}
+
+async fn read_body(response: BlobClientDownloadResult) -> Result<Vec<u8>> {
+	if let Some(length) = response.properties.content_length {
+		ensure!(
+			length <= MAX_READ_BYTES as u64,
+			"JSON/text blob exceeds 16 MiB; use download"
+		);
+	}
+	let mut stream = response.body;
+	let mut result = Vec::new();
+	while let Some(chunk) = stream.try_next().await.map_err(sdk_error)? {
+		ensure!(
+			result.len() + chunk.len() <= MAX_READ_BYTES,
+			"JSON/text blob exceeds 16 MiB; use download"
+		);
+		result.extend_from_slice(&chunk);
+	}
+	Ok(result)
+}
+
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {
 	async fn read(&self, blob: &str) -> Result<Vec<u8>>;
 	async fn download(&self, blob: &str, file: &Path, max_bytes: Option<u64>) -> Result<()>;
 	async fn upload(&self, blob: &str, file: &Path, overwrite: bool) -> Result<()>;
 	async fn list(&self, prefix: &str, limit: usize) -> Result<Value>;
+	/// Only an absent blob returns None; authentication and other errors must propagate.
+	async fn read_versioned(&self, blob: &str) -> Result<Option<VersionedBlob>>;
+	/// Replace the exact ETag read, or create an absent blob when etag is None.
+	async fn write_metadata(&self, blob: &str, bytes: &[u8], etag: Option<&str>) -> Result<()>;
 }
 
 pub struct AzureStorage(BlobContainerClient);
@@ -52,22 +105,47 @@ impl Storage for AzureStorage {
 			.download(None)
 			.await
 			.map_err(sdk_error)?;
-		if let Some(length) = response.properties.content_length {
-			ensure!(
-				length <= MAX_READ_BYTES as u64,
-				"JSON/text blob exceeds 16 MiB; use download"
-			);
-		}
-		let mut stream = response.body;
-		let mut result = Vec::new();
-		while let Some(chunk) = stream.try_next().await.map_err(sdk_error)? {
-			ensure!(
-				result.len() + chunk.len() <= MAX_READ_BYTES,
-				"JSON/text blob exceeds 16 MiB; use download"
-			);
-			result.extend_from_slice(&chunk);
-		}
-		Ok(result)
+		read_body(response).await
+	}
+
+	async fn read_versioned(&self, blob: &str) -> Result<Option<VersionedBlob>> {
+		let response = match self.0.blob_client(blob_path(blob)?).download(None).await {
+			Ok(response) => response,
+			Err(error) => {
+				if let azure_core::error::ErrorKind::HttpResponse {
+					status, error_code, ..
+				} = error.kind() && *status == StatusCode::NotFound
+					&& error_code.as_deref() == Some("BlobNotFound")
+				{
+					return Ok(None);
+				}
+				return Err(sdk_error(error));
+			}
+		};
+		let etag = response
+			.properties
+			.etag
+			.as_ref()
+			.context("Blob response has no ETag; refusing unsafe publication")?
+			.to_string();
+		let bytes = read_body(response).await?;
+		Ok(Some(VersionedBlob { bytes, etag }))
+	}
+
+	async fn write_metadata(&self, blob: &str, bytes: &[u8], etag: Option<&str>) -> Result<()> {
+		ensure!(bytes.len() <= MAX_READ_BYTES, "Metadata exceeds 16 MiB");
+		let options = BlobClientUploadOptions {
+			if_match: etag.map(Into::into),
+			if_none_match: etag.is_none().then(|| "*".into()),
+			blob_content_type: Some("application/json".into()),
+			..Default::default()
+		};
+		self.0
+			.blob_client(blob_path(blob)?)
+			.upload(Body::from(bytes.to_vec()).into(), Some(options))
+			.await
+			.map_err(write_error)?;
+		Ok(())
 	}
 
 	async fn download(&self, blob: &str, file: &Path, max_bytes: Option<u64>) -> Result<()> {
@@ -128,7 +206,7 @@ impl Storage for AzureStorage {
 			.blob_client(blob_path(blob)?)
 			.upload(Body::from(stream).into(), Some(options))
 			.await
-			.map_err(sdk_error)?;
+			.map_err(write_error)?;
 		Ok(())
 	}
 
@@ -363,6 +441,161 @@ mod tests {
 				.any(|(k, v)| k == "if-none-match" && v == "*")
 		);
 		assert!(!requests[1].1.iter().any(|(k, _)| k == "if-none-match"));
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn supplied_token_authorizes_publication_in_artifact_manifest_index_order() -> Result<()>
+	{
+		let root = tempfile::tempdir()?;
+		let file = root.path().join("hello");
+		fs::write(&file, b"test binary")?;
+		let missing = || {
+			let mut headers = Headers::new();
+			headers.insert("x-ms-error-code", "BlobNotFound");
+			(StatusCode::NotFound, headers, Bytes::new())
+		};
+		let created = || (StatusCode::Created, Headers::new(), Bytes::new());
+		let (store, http) = storage(vec![
+			missing(),
+			missing(),
+			created(),
+			missing(),
+			created(),
+			missing(),
+			created(),
+		])?;
+		let request: crate::config::Request = serde_json::from_value(json!({
+			"action": "publish", "tool": "hello", "version": "1.0.0",
+			"platform": "linux-amd64", "file": file,
+			"options": {"storage_url": "https://account.blob.core.windows.net/tools"}
+		}))?;
+		let result = crate::dispatch(&store, &request).await?;
+		let artifact = format!(
+			"hello/1.0.0/{}",
+			result["artifact"]["file"].as_str().expect("filename")
+		);
+		let requests = http.requests.lock().expect("test mutex");
+		assert_eq!(requests.len(), 7);
+		for (request, blob) in requests.iter().zip([
+			"hello/1.0.0/release.json",
+			"hello/index.json",
+			artifact.as_str(),
+			"hello/1.0.0/release.json",
+			"hello/1.0.0/release.json",
+			"hello/index.json",
+			"hello/index.json",
+		]) {
+			assert!(
+				Url::parse(&request.0)?
+					.path()
+					.replace("%2F", "/")
+					.ends_with(blob)
+			);
+		}
+		for index in [2, 4, 6] {
+			assert!(
+				requests[index]
+					.1
+					.iter()
+					.any(|(key, value)| key == "if-none-match" && value == "*")
+			);
+		}
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn existing_artifact_conflicts_remain_typed_and_actionable() -> Result<()> {
+		let root = tempfile::tempdir()?;
+		let file = root.path().join("hello");
+		fs::write(&file, b"test binary")?;
+		let mut headers = Headers::new();
+		headers.insert("x-ms-error-code", "BlobAlreadyExists");
+		let (store, _) = storage(vec![(StatusCode::Conflict, headers, Bytes::new())])?;
+		let error = store
+			.upload("hello/1.0.0/artifact.zip", &file, false)
+			.await
+			.expect_err("exists");
+		assert!(error.is::<WriteConflict>());
+		let message = format!("{error:#}");
+		assert!(message.contains("HTTP 409"));
+		assert!(message.contains("--overwrite"));
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn publication_reads_keep_etags_and_only_allow_missing_blobs() -> Result<()> {
+		let mut headers = Headers::new();
+		headers.insert("etag", "\"revision-1\"");
+		let (store, _) = storage(vec![(StatusCode::Ok, headers, Bytes::from_static(b"{}"))])?;
+		let snapshot = store
+			.read_versioned("hello/index.json")
+			.await?
+			.expect("blob");
+		assert_eq!(snapshot.bytes, b"{}");
+		assert_eq!(snapshot.etag, "\"revision-1\"");
+		for (status, code, missing) in [
+			(StatusCode::NotFound, "BlobNotFound", true),
+			(StatusCode::NotFound, "ContainerNotFound", false),
+			(StatusCode::Unauthorized, "AuthenticationFailed", false),
+			(
+				StatusCode::Forbidden,
+				"AuthorizationPermissionMismatch",
+				false,
+			),
+		] {
+			let mut headers = Headers::new();
+			headers.insert("x-ms-error-code", code);
+			let (store, http) = storage(vec![(status, headers, Bytes::new())])?;
+			let result = store.read_versioned("hello/index.json").await;
+			if missing {
+				assert!(result?.is_none());
+			} else {
+				assert!(result.is_err());
+			}
+			assert_eq!(http.requests.lock().expect("test mutex").len(), 1);
+		}
+		let (store, _) = storage(vec![blob_response(b"{}".to_vec())])?;
+		assert!(
+			store.read_versioned("hello/index.json").await.is_err(),
+			"Missing ETag must fail closed"
+		);
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn publication_metadata_writes_use_etag_preconditions() -> Result<()> {
+		let (store, http) = storage(vec![
+			(StatusCode::Created, Headers::new(), Bytes::new()),
+			(StatusCode::Created, Headers::new(), Bytes::new()),
+			(StatusCode::PreconditionFailed, Headers::new(), Bytes::new()),
+		])?;
+		store
+			.write_metadata("hello/index.json", b"{}", None)
+			.await?;
+		store
+			.write_metadata("hello/index.json", b"{}", Some("\"revision-1\""))
+			.await?;
+		let error = store
+			.write_metadata("hello/index.json", b"{}", Some("\"stale\""))
+			.await
+			.expect_err("conflict");
+		assert!(error.is::<WriteConflict>());
+		let requests = http.requests.lock().expect("test mutex");
+		assert!(
+			requests[0]
+				.1
+				.iter()
+				.any(|(key, value)| key == "if-none-match" && value == "*")
+		);
+		assert!(!requests[0].1.iter().any(|(key, _)| key == "if-match"));
+		assert!(
+			requests[1]
+				.1
+				.iter()
+				.any(|(key, value)| key == "if-match" && value == "\"revision-1\"")
+		);
+		assert!(!requests[1].1.iter().any(|(key, _)| key == "if-none-match"));
 		Ok(())
 	}
 

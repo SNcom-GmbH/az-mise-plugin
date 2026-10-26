@@ -1,13 +1,19 @@
 use anyhow::{Result, ensure};
-use azure_ac::{config::blob_path, storage::Storage};
+use azure_blob::{
+	config::blob_path,
+	storage::{Storage, VersionedBlob, WriteConflict},
+};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
 	fs,
 	io::Write,
 	path::{Path, PathBuf},
+	sync::Mutex,
 };
 
 pub struct FileStorage(pub PathBuf);
+static METADATA_LOCK: Mutex<()> = Mutex::new(());
 
 #[async_trait::async_trait]
 impl Storage for FileStorage {
@@ -41,7 +47,14 @@ impl Storage for FileStorage {
 			.create(true)
 			.create_new(!overwrite)
 			.truncate(overwrite)
-			.open(target)?;
+			.open(target)
+			.map_err(|error| {
+				if error.kind() == std::io::ErrorKind::AlreadyExists {
+					WriteConflict.into()
+				} else {
+					anyhow::Error::from(error)
+				}
+			})?;
 		output.write_all(&fs::read(source)?)?;
 		Ok(())
 	}
@@ -72,5 +85,31 @@ impl Storage for FileStorage {
 		);
 		result.sort_by_key(|v| v["name"].as_str().unwrap_or_default().to_owned());
 		Ok(json!(result))
+	}
+	async fn read_versioned(&self, name: &str) -> Result<Option<VersionedBlob>> {
+		let _guard = METADATA_LOCK.lock().expect("test metadata lock");
+		match fs::read(self.0.join(blob_path(name)?)) {
+			Ok(bytes) => Ok(Some(VersionedBlob {
+				etag: hex::encode(Sha256::digest(&bytes)),
+				bytes,
+			})),
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+			Err(error) => Err(error.into()),
+		}
+	}
+	async fn write_metadata(&self, name: &str, bytes: &[u8], etag: Option<&str>) -> Result<()> {
+		let _guard = METADATA_LOCK.lock().expect("test metadata lock");
+		let target = self.0.join(blob_path(name)?);
+		let current = match fs::read(&target) {
+			Ok(bytes) => Some(hex::encode(Sha256::digest(&bytes))),
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+			Err(error) => return Err(error.into()),
+		};
+		if current.as_deref() != etag {
+			return Err(WriteConflict.into());
+		}
+		fs::create_dir_all(target.parent().expect("metadata parent"))?;
+		fs::write(target, bytes)?;
+		Ok(())
 	}
 }

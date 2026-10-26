@@ -1,7 +1,7 @@
 mod common;
 
 use anyhow::Result;
-use azure_ac::{
+use azure_blob::{
 	archive,
 	config::{Options, Request, blob_path, destination, filename},
 	dispatch,

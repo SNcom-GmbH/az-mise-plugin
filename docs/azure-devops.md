@@ -1,4 +1,4 @@
-# Azure DevOps mit v0.4.0
+# Azure DevOps mit v0.5.0
 
 ## Vertrag mit InstallBuilder@2
 
@@ -8,7 +8,7 @@ Workload Identity Federation. Der Task übernimmt die Anmeldung mit der Service
 Connection und beschafft ein Access Token für den Scope
 `https://storage.azure.com/.default`.
 
-Der Task startet `mise install --locked` mit `AZURE_AC_STORAGE_TOKEN` ausschließlich
+Der Task startet `mise install --locked` mit `AZURE_BLOB_STORAGE_TOKEN` ausschließlich
 im Environment des Kindprozesses. Er muss den Wert durch alle Zwischenprozesse
 erhalten. Keine Token-Werte in Kommandoargumenten, Request-JSON, Tool-Optionen,
 `mise.toml`, `mise.lock`, temporären Dateien, Caches oder Build-Artefakten speichern.
@@ -52,17 +52,18 @@ weiterhin. Die Einführung dieses Plugins ändert keine Azure-Berechtigungen.
 
 ## Deployment-Reihenfolge
 
-1. Im Repository `SNcom-GmbH/az-mise-plugin` die Helfer-Binaries für `v0.4.0`
+1. Im Repository `SNcom-GmbH/az-mise-plugin` die Helfer-Binaries für `v0.5.0`
    und `SHA256SUMS` veröffentlichen. Beide Plattform-Assets müssen verfügbar sein:
-   `azure-ac-linux-amd64-musl.tar.gz` und `azure-ac-windows-amd64.zip`.
+   `azure-blob-linux-amd64-musl.tar.gz` und `azure-blob-windows-amd64.zip`.
 2. Danach die aktualisierte Lua-Revision bereitstellen. Sie lädt genau den
-   v0.4.0-Helfer aus dem neuen Repository.
+   v0.5.0-Helfer aus dem neuen Repository.
 3. In den Consumer-Repositories die Plugin-URLs auf
    `https://github.com/SNcom-GmbH/az-mise-plugin.git` und die Commit-Pins auf den
    vollständigen SHA dieser Revision aktualisieren. Bestehende Pins wechseln
    weder Repository noch Helferversion automatisch. Lockfiles weiterhin verwenden.
 4. Erst danach die Service-Connection-Unterstützung von InstallBuilder@2 aktivieren
-   und `az-development` verwenden.
+   und `az-development` verwenden. Der Task muss `AZURE_BLOB_STORAGE_TOKEN` setzen;
+   bisherige Variablennamen werden nicht unterstützt.
 
 Private GitHub-Release-Assets benötigen zusätzlich `GITHUB_TOKEN` oder `GH_TOKEN`
 mit Leserechten auf das neue Repository. SSH-Zugriff auf das Plugin allein genügt

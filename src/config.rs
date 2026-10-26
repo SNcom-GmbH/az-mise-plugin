@@ -215,5 +215,5 @@ fn is_reserved_name(base: &str) -> bool {
 
 pub fn noninteractive() -> bool {
 	std::env::var_os("CI").is_some()
-		|| std::env::var("AZURE_AC_NONINTERACTIVE").as_deref() == Ok("1")
+		|| std::env::var("AZURE_BLOB_NONINTERACTIVE").as_deref() == Ok("1")
 }

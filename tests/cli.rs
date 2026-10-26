@@ -1,13 +1,71 @@
 use std::process::Command;
 
 fn cli() -> Command {
-	let mut command = Command::new(env!("CARGO_BIN_EXE_azure-ac"));
+	let mut command = Command::new(env!("CARGO_BIN_EXE_azure-blob"));
 	for (key, _) in std::env::vars_os() {
 		if key.to_string_lossy().starts_with("AZURE_") {
 			command.env_remove(key);
 		}
 	}
 	command
+}
+
+#[test]
+fn cli_reports_azure_blob_name() {
+	let output = cli().arg("--version").output().expect("CLI version");
+	assert!(output.status.success());
+	assert_eq!(
+		String::from_utf8(output.stdout).expect("version output"),
+		format!("azure-blob {}\n", env!("CARGO_PKG_VERSION"))
+	);
+	let output = cli().arg("--help").output().expect("CLI help");
+	assert!(output.status.success());
+	assert!(String::from_utf8_lossy(&output.stdout).contains("Usage: azure-blob"));
+}
+
+#[test]
+fn publish_requires_an_explicit_supported_platform() {
+	for platform in [None, Some("darwin-arm64")] {
+		let mut command = cli();
+		command.args(["publish", "hello", "1.0.0", "hello"]);
+		if let Some(platform) = platform {
+			command.args(["--platform", platform]);
+		}
+		let output = command.output().expect("CLI");
+		assert!(!output.status.success());
+		assert!(String::from_utf8_lossy(&output.stderr).contains("--platform"));
+	}
+}
+
+#[test]
+fn publish_uses_the_same_supplied_token_validation_as_download() {
+	for action in [
+		vec![
+			"publish",
+			"hello",
+			"1.0.0",
+			"hello",
+			"--platform",
+			"linux-amd64",
+		],
+		vec!["download", "hello/1.0.0/hello.zip", "hello.zip"],
+	] {
+		let output = cli()
+			.env("CI", "1")
+			.env("AZURE_BLOB_STORAGE_TOKEN", " ")
+			.args([
+				"--storage-url",
+				"https://account.blob.core.windows.net/tools",
+			])
+			.args(action)
+			.output()
+			.expect("CLI");
+		assert!(!output.status.success());
+		let error = String::from_utf8_lossy(&output.stderr);
+		assert!(error.contains("AZURE_BLOB_STORAGE_TOKEN must contain"));
+		assert!(!error.contains("AZURE_TENANT_ID"));
+		assert!(output.stdout.is_empty());
+	}
 }
 
 #[test]
@@ -76,7 +134,7 @@ fn supplied_token_overrides_every_auth_mode_and_conflicting_identity() {
 	for auth in ["auto", "environment", "workload", "managed", "broker"] {
 		let output = cli()
 			.env("CI", "1")
-			.env("AZURE_AC_STORAGE_TOKEN", "caller-storage-token")
+			.env("AZURE_BLOB_STORAGE_TOKEN", "caller-storage-token")
 			.env("AZURE_CLIENT_SECRET", "conflicting-secret")
 			.env("AZURE_FEDERATED_TOKEN_FILE", "missing-assertion-file")
 			.args([
@@ -106,7 +164,7 @@ fn invalid_supplied_token_fails_closed_for_every_auth_mode() {
 			"secret\tvalue",
 		] {
 			let output = cli()
-				.env("AZURE_AC_STORAGE_TOKEN", token)
+				.env("AZURE_BLOB_STORAGE_TOKEN", token)
 				.env("AZURE_CLIENT_SECRET", "unused-secret")
 				.args([
 					"--storage-url",
@@ -119,7 +177,7 @@ fn invalid_supplied_token_fails_closed_for_every_auth_mode() {
 				.expect("CLI");
 			assert!(!output.status.success());
 			let error = String::from_utf8_lossy(&output.stderr);
-			assert!(error.contains("AZURE_AC_STORAGE_TOKEN must contain"));
+			assert!(error.contains("AZURE_BLOB_STORAGE_TOKEN must contain"));
 			assert!(!error.contains("secret"));
 			assert!(!error.contains("AZURE_TENANT_ID"));
 			assert!(!error.contains("sign-in required"));
@@ -133,7 +191,7 @@ fn invalid_supplied_token_fails_closed_for_every_auth_mode() {
 fn non_unicode_supplied_token_fails_closed() {
 	use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 	let output = cli()
-		.env("AZURE_AC_STORAGE_TOKEN", OsString::from_vec(vec![0xff]))
+		.env("AZURE_BLOB_STORAGE_TOKEN", OsString::from_vec(vec![0xff]))
 		.args([
 			"--storage-url",
 			"https://account.blob.core.windows.net/tools",
@@ -144,7 +202,7 @@ fn non_unicode_supplied_token_fails_closed() {
 	assert!(!output.status.success());
 	assert!(
 		String::from_utf8_lossy(&output.stderr)
-			.contains("AZURE_AC_STORAGE_TOKEN must be valid Unicode")
+			.contains("AZURE_BLOB_STORAGE_TOKEN must be valid Unicode")
 	);
 }
 
@@ -152,9 +210,9 @@ fn non_unicode_supplied_token_fails_closed() {
 fn errors_redact_supplied_token_even_in_caller_controlled_context() {
 	let token = "caller-secret-token";
 	let output = cli()
-		.env("AZURE_AC_STORAGE_TOKEN", token)
+		.env("AZURE_BLOB_STORAGE_TOKEN", token)
 		.env(
-			"AZURE_AC_REQUEST",
+			"AZURE_BLOB_REQUEST",
 			serde_json::json!({
 				"action": "versions", "tool": format!("../{token}"),
 				"options": {"storage_url": "https://account.blob.core.windows.net/tools"}

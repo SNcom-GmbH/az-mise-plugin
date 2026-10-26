@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod auth;
 pub mod config;
+mod publish;
 pub mod storage;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -49,6 +50,7 @@ pub async fn dispatch(store: &dyn Storage, request: &Request) -> Result<Value> {
 			Ok(json!({"versions": versions}))
 		}
 		"install" => install(store, request).await,
+		"publish" => publish::publish(store, request).await,
 		"list" => {
 			let limit = request.limit.unwrap_or(MAX_LIST_RESULTS);
 			ensure!(
@@ -182,7 +184,7 @@ async fn install(store: &dyn Storage, request: &Request) -> Result<Value> {
 		"Artifact SHA-256 mismatch; nothing was installed"
 	);
 	let stage = tempfile::Builder::new()
-		.prefix(".azure-ac-stage-")
+		.prefix(".azure-blob-stage-")
 		.tempdir_in(parent)
 		.with_context(|| {
 			format!(

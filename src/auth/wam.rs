@@ -220,7 +220,7 @@ fn account_path(options: &Options) -> Result<PathBuf> {
 	let base = std::env::var_os("LOCALAPPDATA")
 		.context("LOCALAPPDATA is required for Windows account metadata")?;
 	let identity = format!("{}:{}", options.tenant_id, options.client_id);
-	Ok(PathBuf::from(base).join("mise-azure-ac").join(format!(
+	Ok(PathBuf::from(base).join("mise-azure-blob").join(format!(
 		"{}.json",
 		hex::encode(Sha256::digest(identity.as_bytes()))
 	)))

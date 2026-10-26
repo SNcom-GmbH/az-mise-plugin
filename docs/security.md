@@ -2,7 +2,7 @@
 
 ## Identitäten und Optionen
 
-- **Vorgegebenes Storage-Token:** Sobald `AZURE_AC_STORAGE_TOKEN` gesetzt ist,
+- **Vorgegebenes Storage-Token:** Sobald `AZURE_BLOB_STORAGE_TOKEN` gesetzt ist,
   verwendet der Helfer ausschließlich dieses Bearer-Token für Blob-Metadaten,
   Indizes, Manifeste und Artefakte. Es hat Vorrang vor allen anderen Identitäten
   und gültigen `auth`-Modi, auch `broker`, `environment`, `workload` und `managed`.
@@ -25,7 +25,7 @@
   Identität versucht.
 - **Kein Browser-/Device-Code-Login, kein Azure-CLI-Fallback.** Auf Linux werden
   fehlende CI-Identitäten ohne interaktiven Fallback abgelehnt.
-- Ohne `AZURE_AC_STORAGE_TOKEN` bleibt die vorhandene Identitätsauswahl erhalten.
+- Ohne `AZURE_BLOB_STORAGE_TOKEN` bleibt die vorhandene Identitätsauswahl erhalten.
   `CS_*`-Signierzugangsdaten werden niemals für Azure Blob Storage verwendet.
 
 ## WAM und App-Registrierung
@@ -38,10 +38,10 @@ Für eine eigene Public-Client-App-Registrierung sind typischerweise erforderlic
 - Freigabe durch Tenant-Richtlinien, Conditional Access und ggf. MFA.
 
 Der WAM-Adapter speichert nur die ausgewählte Windows-Konto-ID unter
-`%LOCALAPPDATA%\mise-azure-ac\<hash>.json`; niemals Access- oder Refresh-Tokens.
+`%LOCALAPPDATA%\mise-azure-blob\<hash>.json`; niemals Access- oder Refresh-Tokens.
 Das Löschen der Datei entfernt nur die gespeicherte Auswahl und erzwingt keinen
 Kontowechsel; dieser folgt den Windows-/Broker-Richtlinien.
-`AZURE_AC_NONINTERACTIVE=1` verhindert jeden WAM-Dialog.
+`AZURE_BLOB_NONINTERACTIVE=1` verhindert jeden WAM-Dialog.
 
 ## Artefakt-Vertrauen
 
@@ -92,7 +92,7 @@ den Container hat, kann beide ersetzen.
 
 - Secrets werden nur aus Umgebungsvariablen gelesen und nicht in Tool-Optionen,
   Kommandozeilen oder Logs geschrieben.
-- `AZURE_AC_STORAGE_TOKEN` gelangt als Umgebungsvariable durch Lua und das
+- `AZURE_BLOB_STORAGE_TOKEN` gelangt als Umgebungsvariable durch Lua und das
   verschachtelte `mise exec` zum Helfer. Es gehört niemals in Request-JSON,
   Konfiguration, Lockfiles, Caches, Artefakte oder Pipeline-Output-Variablen.
   Der Rust-Credential-Typ redigiert Debug-Ausgaben; Lua und der Helfer redigieren
