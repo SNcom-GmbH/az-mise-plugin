@@ -106,20 +106,10 @@ fn assert_no_secret_files(path: &Path) -> Result<()> {
 
 fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 	let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-	let debug = env::current_exe()?
-		.parent()
-		.context("Missing deps directory")?
-		.parent()
-		.context("Missing build directory")?
-		.to_owned();
-	let helper = debug.join("examples").join(if cfg!(windows) {
-		"mock_helper.exe"
-	} else {
-		"mock_helper"
-	});
+	let helper = PathBuf::from(env!("CARGO_BIN_EXE_mock_helper"));
 	ensure!(
 		helper.is_file(),
-		"Run mise run test (or cargo build --example mock_helper) first"
+		"Run mise run test (or cargo test --features test-helper) first"
 	);
 	let root = tempfile::Builder::new()
 		.prefix("azure mise integration spaces ")

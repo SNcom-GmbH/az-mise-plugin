@@ -7,8 +7,8 @@ The CLI and mise backend are named `azure-blob`; internal variables use
 
 - `hooks/` and `lib/azure.lua`: mise backend hooks and Rust helper invocation.
 - `src/`: authentication, Azure Blob access, CLI, and archive installation.
-- `tests/`: integration tests; `tests/helpers/mock_helper.rs` is a test-only
-  executable registered as a Cargo example, not a production binary.
+- `tests/`: integration tests; `tests/helpers/mock_helper.rs` is a binary gated
+  behind the non-default `test-helper` feature, excluded from normal builds and installs.
 - `docs/`: Azure DevOps contract, security notes, and Windows test checklist.
 
 ## Checks

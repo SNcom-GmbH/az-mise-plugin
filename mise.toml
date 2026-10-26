@@ -8,15 +8,15 @@ run = "cargo build --locked{% if os() == \"windows\" %} --target x86_64-pc-windo
 [tasks.test]
 description = "Run Rust unit and real mise/Lua integration tests without Azure access"
 run = [
-	"cargo build --locked --example mock_helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
-	"cargo test --locked --all-targets{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
+	"cargo build --locked --features test-helper --bin mock_helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
+	"cargo test --locked --all-targets --features test-helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
 ]
 
 [tasks.lint]
 description = "Check Rust formatting and lint"
 run = [
 	"cargo fmt --all -- --check",
-	"cargo clippy --locked --all-targets{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %} -- -D warnings",
+	"cargo clippy --locked --all-targets --features test-helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %} -- -D warnings",
 ]
 
 [tasks.check]
@@ -24,5 +24,5 @@ description = "Run all local checks"
 depends = ["test", "lint"]
 
 [tasks.blob]
-description = "List, read, download or upload blobs using plugin authentication"
+description = "Manage blobs and publish tools using plugin authentication"
 run = "cargo run --quiet --locked{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %} --"
