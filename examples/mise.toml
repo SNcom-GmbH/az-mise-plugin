@@ -1,5 +1,5 @@
 [plugins]
-azure-ac = "https://github.com/SNcom-GmbH/az-mise-plugin.git#main"
+azure-ac = "https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.4.0"
 
 [tools]
 "azure-ac:hello" = { version = "1.0.0", storage_url = "https://youraccount.blob.core.windows.net/tools" }
@@ -15,4 +15,5 @@ azure-ac = "https://github.com/SNcom-GmbH/az-mise-plugin.git#main"
 # Optional user-assigned managed identity:
 # auth = "managed"
 # managed_identity_client_id = "..."
-# Pin the plugin to a full commit SHA instead of main in production.
+# The tag pins the plugin version; version above selects the tool version.
+# Use a full commit SHA instead of the tag for an immutable plugin pin.
