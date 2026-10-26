@@ -20,6 +20,7 @@ Tests must run without Azure access or real credentials.
 
 Follow `.editorconfig` and `rustfmt.toml`. Keep test helpers under `tests/`.
 Keep README examples minimal; put detailed operational guidance in `docs/`.
+Write documentation and code comments in English.
 
 ## Constraints
 
@@ -37,4 +38,5 @@ Keep README examples minimal; put detailed operational guidance in `docs/`.
 - Support Linux and Windows x86-64. CI success does not verify Windows WAM/Entra
   SSO; use `docs/workplace-test.md` for workplace verification.
 - When changing versions, update `Cargo.toml`, `Cargo.lock`, `metadata.lua`,
-  the helper pin in `lib/azure.lua`, and README references together.
+  the helper pin in `lib/azure.lua`, README references, and any version text in
+  `docs/` or `examples/` together.

@@ -1,89 +1,97 @@
-# Erster Test: Windows-Firmenkonto und Linux-CI
+# First test: Windows corporate account and Linux CI
 
-## App-Registrierung (WAM)
+## App registration (WAM)
 
-Für eine eigene Public-Client-App-Registrierung:
+For a custom public-client app registration:
 
-- Delegierte Azure-Storage-Berechtigung `user_impersonation` erteilen.
-- Broker-Redirect-URI `ms-appx-web://Microsoft.AAD.BrokerPlugin/<client_id>`
-  unter „Mobile and desktop applications“ eintragen.
-- Public-Client-Flows und Tenant-/Conditional-Access-Richtlinien freigeben.
-- Der Standard-Client ist die Azure-CLI-App; Firmenrichtlinien können ihn blockieren.
+- Grant the delegated Azure Storage permission `user_impersonation`.
+- Add the broker redirect URI `ms-appx-web://Microsoft.AAD.BrokerPlugin/<client_id>`
+  under "Mobile and desktop applications".
+- Allow public-client flows and tenant/Conditional Access policies.
+- The default client is the Azure CLI app; corporate policy may block it.
 
 ## Windows
 
-1. Plugin-Repository klonen und GitHub-Zugriff sicherstellen.
-2. Das Windows-ZIP aus einem erfolgreichen GitHub-Actions-Lauf oder Release
-   herunterladen und entpacken. `AZURE_BLOB_HELPER` auf die enthaltene `azure-blob.exe`
-   setzen; dafür ist kein Rust-Compiler erforderlich. Alternativ im Checkout
-   `mise trust`, `mise install`, `mise run build`, `mise run check` ausführen und
-   `AZURE_BLOB_HELPER` auf `target/x86_64-pc-windows-msvc/debug/azure-blob.exe` setzen.
-3. `examples/mise.toml` in ein separates Testprojekt kopieren und Account/Container
-   ersetzen. Bei mehreren Tenants `tenant_id` explizit ergänzen.
-4. Ein harmloses Tool mit `bin/NAME.exe` oder `bin/NAME.cmd`, korrektem SHA-256,
-   `release.json` und `index.json` nach README-Schema bereitstellen. Optional
-   `size` im Manifest und `sha256` als Tool-Option pinnen; ein falscher Pin muss
-   vor dem Download fehlschlagen.
-5. Dem Testkonto `Storage Blob Data Reader` geben; VPN, DNS und Private-Endpoint-
-   Netzwerkregeln gegebenenfalls aktivieren. Bei AppLocker/SmartScreen/ASR das
-   unsignierte Binary freigeben oder signieren.
-6. `mise trust`, dann `mise install`: vorhandenes Windows-Firmenkonto soll möglichst
-   still funktionieren; falls nötig erscheint der native WAM-Dialog. Kein separater
-   Browser- oder Device-Code-Login und kein vorheriges `az login`.
-7. `mise ls-remote azure-blob:NAME` und `mise exec -- NAME --version` prüfen.
-8. In einem neuen Terminal `mise cache clear azure-blob:NAME` ausführen, dann erneut
-   Versionen abfragen. So wird der Login nicht durch mises Versionscache verdeckt.
-9. Nach Ablauf eines Access Tokens wiederholen: stille WAM-Erneuerung prüfen.
-10. Mit `AZURE_BLOB_NONINTERACTIVE=1` darf kein Dialog starten; ohne nutzbare stille
-    Anmeldung muss der Vorgang fehlschlagen.
-11. Einen falschen `sha256`-Pin bzw. eine zu kleine `size` testen: Die Installation
-    muss vor Extraktion abbrechen und das Zielverzeichnis unverändert lassen.
-12. Bei Bedarf `MISE_DEBUG=1` verwenden; Fehlermeldungen enthalten HTTP-Status und
-    gefilterten Azure-Fehlercode, aber keine Response-Bodies.
+1. Clone the plugin repository and make sure GitHub access works.
+2. Get the Windows ZIP from a successful GitHub Actions run or release and extract
+   it. Set `AZURE_BLOB_HELPER` to the included `azure-blob.exe`; no Rust compiler is
+   needed.
+   - Alternatively, in the checkout run `mise trust`, `mise install`,
+     `mise run build`, and `mise run check`, then set `AZURE_BLOB_HELPER` to
+     `target/x86_64-pc-windows-msvc/debug/azure-blob.exe`.
+3. Copy `examples/mise.toml` into a separate test project and replace the account
+   and container. Add `tenant_id` explicitly when using multiple tenants.
+4. Provide a harmless tool with `bin/NAME.exe` or `bin/NAME.cmd`, a correct
+   SHA-256, `release.json`, and `index.json` following the README schema.
+5. Optionally set `size` in the manifest and pin `sha256` as a tool option. A
+   wrong pin must fail before download.
+6. Give the test account `Storage Blob Data Reader`; enable VPN, DNS, and
+   private-endpoint network rules if needed. If AppLocker, SmartScreen, or ASR
+   blocks the unsigned binary, allow it or sign it.
+7. Run `mise trust`, then `mise install`. The existing Windows corporate account
+   should work silently where possible; the native WAM dialog appears only if
+   needed. There is no separate browser or device-code login and no prior
+   `az login`.
+8. Check `mise ls-remote azure-blob:NAME` and `mise exec -- NAME --version`.
+9. In a new terminal, run `mise cache clear azure-blob:NAME` and query versions
+   again. This ensures mise's version cache does not hide the login.
+10. Repeat after an access token expires and verify silent WAM renewal.
+11. With `AZURE_BLOB_NONINTERACTIVE=1`, no dialog may start; without a usable
+    silent login, the operation must fail.
+12. Test a wrong `sha256` pin and a too-small `size`: installation must abort
+    before extraction and leave the target directory unchanged.
+13. Use `MISE_DEBUG=1` if needed; errors include the HTTP status and a filtered
+    Azure error code, but no response bodies.
 
-**Noch nicht verifiziert:** direkte WinRT-WAM-Aufrufe im Unternehmens-Tenant,
-Default-Kontoauswahl, Tenant-Wechsel, Consent und Conditional Access. Der erfolgreiche
-Windows-Build bzw. Mocktest ersetzt diesen Test nicht. Der native Adapter ist kein
-MSAL-Nachbau und übernimmt nicht Azure CLIs Subscription-/Tenant-Auswahllogik.
+**Not yet verified:** direct WinRT WAM calls in the corporate tenant, default
+account selection, tenant switching, consent, and Conditional Access. A successful
+Windows build or mock test does not replace this test. The native adapter is not
+an MSAL reimplementation and does not copy Azure CLI's subscription or tenant
+selection logic.
 
-Bei Problemen: App-Registrierung und Broker-Verfügbarkeit prüfen. Der vorläufige
-Entwicklungs-Client kann durch Firmenrichtlinien blockiert sein; eine eigene
-Public-Client-App kann erforderlich werden. Richtlinien nicht mit einem automatischen
-Device-Code-Fallback umgehen. Details: [security.md](security.md).
+If there are problems, check the app registration and broker availability. The
+provisional development client may be blocked by corporate policy; a custom
+public-client app may be required. Do not work around policy with an automatic
+device-code fallback. Details: [security.md](security.md).
 
 ## Linux/CI
 
-Für InstallBuilder@2 mit der ARM-Service-Connection `az-development` gilt der
-[Azure-DevOps-Vertrag und die Deployment-Reihenfolge](azure-devops.md). Im Zieltenant
-auch Workload Identity Federation, Token-Ablauf und HTTP 401/403 ohne Identitätswechsel
-prüfen. Der Task übergibt das Storage-Token ausschließlich als
-`AZURE_BLOB_STORAGE_TOKEN` an `mise install --locked`; der Helfer kann es nicht erneuern.
+For InstallBuilder@2 with the ARM service connection `az-development`, the
+[Azure DevOps contract and deployment order](azure-devops.md) apply. In the target
+tenant, also test Workload Identity Federation, token expiry, and HTTP 401/403
+without an identity switch. The task passes the storage token to
+`mise install --locked` only as `AZURE_BLOB_STORAGE_TOKEN`; the helper cannot
+renew it.
 
-1. Statischen musl-Helfer in einem Agent/Container mit CA-Zertifikaten verwenden.
-2. Entweder `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_FEDERATED_TOKEN_FILE` setzen
-   oder einen Service Principal mit `AZURE_CLIENT_SECRET` aus dem CI-Secret-Store.
-3. Für Workload Identity muss die CI-Plattform die gültige Assertion-Datei liefern;
-   das Plugin erzeugt keine Föderationskonfiguration oder CI-OIDC-Assertion.
-4. `CI=1` setzen, `mise install` und `mise ls-remote azure-blob:NAME` ausführen.
-5. Token-Erneuerung bei längerem Job prüfen, einschließlich einer erforderlichen
-   Rotation der Assertion-Datei durch den CI-Provider.
-6. Mit fehlenden oder falschen Credentials muss der Job ohne Dialog, Browser,
-   Azure-CLI-Aufruf oder Wechsel auf eine Personenidentität fehlschlagen.
-7. Managed Identity nur explizit über `auth = "managed"` auf passendem Azure-Agent;
-   bei benutzerzugewiesener Identität zusätzlich `managed_identity_client_id` setzen.
+1. Use the static musl helper in an agent or container with CA certificates.
+2. Set either `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and
+   `AZURE_FEDERATED_TOKEN_FILE`, or a service principal with
+   `AZURE_CLIENT_SECRET` from the CI secret store.
+3. For workload identity, the CI platform must provide the valid assertion file;
+   the plugin does not create federation configuration or a CI OIDC assertion.
+4. Set `CI=1`, run `mise install`, and run `mise ls-remote azure-blob:NAME`.
+5. Check token renewal during a longer job, including rotation of the assertion
+   file by the CI provider.
+6. With missing or wrong credentials, the job must fail without a dialog, browser,
+   Azure CLI call, or switch to a personal identity.
+7. Use managed identity only with an explicit `auth = "managed"` on a suitable
+   Azure agent; also set `managed_identity_client_id` for a user-assigned
+   identity.
 
-## Gemeinsame Fehlerfälle
+## Common failures
 
-- Falsche Prüfsumme, falscher `sha256`-Pin, überschrittene `size`, fehlende Plattform
-  oder fehlendes `bin/`: keine Installation.
-- Vorhandene nichtleere Installationsverzeichnisse: kein Überschreiben.
-- HTTP 403 nach Login: Datenebenenrechte, Tenant und Storage-Netzwerkregeln prüfen.
-- HTTP 404: Blob-/Container-Pfad und `index.json`/`release.json` prüfen; das ist
-  kein Berechtigungsfehler.
-- HTTP 409 beim Upload: Blob existiert bereits; `--overwrite` verwenden.
-- Für private GitHub-Release-Assets einen passenden GitHub-Token bereitstellen;
-  SSH-Zugriff auf das Plugin allein genügt dafür nicht.
+- Wrong checksum, wrong `sha256` pin, exceeded `size`, missing platform, or
+  missing `bin/`: no installation.
+- Existing nonempty installation directories are not overwritten.
+- HTTP 403 after login: check data-plane permissions, tenant, and storage network
+  rules.
+- HTTP 404: check the blob/container path and `index.json`/`release.json`; this is
+  not a permission error.
+- HTTP 409 on upload: the blob already exists; use `--overwrite`.
+- For private GitHub release assets, provide a suitable GitHub token; SSH access
+  to the plugin alone is not enough.
 
-Rückmeldung: mise-/Windows-Version bzw. Agent-Image, Befehl, Fehlerklasse/HTTP-Status,
-anonymisierte Konfiguration und ob das Microsoft-Kontofenster erschien.
-**Keine Tokens, Secrets, SAS-URLs oder vollständigen Credential-Logs weitergeben.**
+Feedback: include the mise/Windows version or agent image, the command, the error
+class/HTTP status, an anonymized configuration, and whether the Microsoft account
+window appeared. **Do not share tokens, secrets, SAS URLs, or full credential
+logs.**

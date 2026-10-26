@@ -7,13 +7,20 @@ azure-blob = "https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.5.0"
 # Optional enterprise identity settings (same tool entry):
 # tenant_id = "your-tenant-id"
 # client_id = "your-public-client-app-id"
-# Azure Pipelines: use a service principal. Map AZURE_TENANT_ID,
-# AZURE_CLIENT_ID and secret AZURE_CLIENT_SECRET into the task environment.
+#
+# Azure Pipelines (recommended): InstallBuilder@2 supplies
+# AZURE_BLOB_STORAGE_TOKEN in the task environment.
+#
+# Direct service principal instead: map AZURE_TENANT_ID, AZURE_CLIENT_ID and the
+# AZURE_CLIENT_SECRET secret into the environment, then set:
 # auth = "environment"
+#
 # Optional independent artifact pin (64 hex characters):
 # sha256 = "..."
+#
 # Optional user-assigned managed identity:
 # auth = "managed"
 # managed_identity_client_id = "..."
-# The tag pins the plugin version; version above selects the tool version.
+#
+# The ref pins the plugin version; version above selects the tool version.
 # Use a full commit SHA instead of the tag for an immutable plugin pin.

@@ -1,88 +1,89 @@
-# Azure DevOps mit v0.5.0
+# Azure DevOps integration
 
-## Vertrag mit InstallBuilder@2
+## Contract with InstallBuilder@2
 
-InstallBuilder@2 verwendet die Azure-DevOps-ARM-Service-Connection `az-development`
-für den Zugriff auf Azure Blob Storage. Das gilt auch für Service Connections mit
-Workload Identity Federation. Der Task übernimmt die Anmeldung mit der Service
-Connection und beschafft ein Access Token für den Scope
-`https://storage.azure.com/.default`.
+InstallBuilder@2 uses the Azure DevOps ARM service connection `az-development` to
+access Azure Blob Storage, including service connections that use Workload
+Identity Federation. The task signs in with the service connection and obtains an
+access token for the `https://storage.azure.com/.default` scope.
 
-Der Task startet `mise install --locked` mit `AZURE_BLOB_STORAGE_TOKEN` ausschließlich
-im Environment des Kindprozesses. Er muss den Wert durch alle Zwischenprozesse
-erhalten. Keine Token-Werte in Kommandoargumenten, Request-JSON, Tool-Optionen,
-`mise.toml`, `mise.lock`, temporären Dateien, Caches oder Build-Artefakten speichern.
-Auch keine Pipeline-Output-Variable oder `task.setvariable` dafür ausgeben. Der Task
-darf weder das Environment noch den Token-Antwortinhalt protokollieren.
+The task starts `mise install --locked` with `AZURE_BLOB_STORAGE_TOKEN` only in
+the child process environment. It must preserve the value across every
+intermediate process. Never store token values in command arguments, request
+JSON, tool options, `mise.toml`, `mise.lock`, temporary files, caches, or build
+artifacts. Do not emit them as a pipeline output variable or through
+`task.setvariable`. The task must not log the environment or the token response.
 
-Das Token muss ein Storage-Access-Token sein. Eine ARM-Audience oder die rohe
-OIDC-Assertion einer föderierten Service Connection genügt nicht. Der Helfer liest
-keine Service-Connection-Konfiguration und führt diesen Token-Austausch nicht durch.
-`AZURE_FEDERATED_TOKEN_FILE` bleibt der getrennte vorhandene Weg für eine vom
-CI-Provider bereitgestellte Assertion-Datei.
+The token must be a storage access token. An ARM-audience token or the raw OIDC
+assertion from a federated service connection is not enough. The helper does not
+read service-connection configuration and does not perform that token exchange.
+`AZURE_FEDERATED_TOKEN_FILE` remains the separate, supported path for an
+assertion file supplied by the CI provider.
 
-Das Plugin verwendet das Token als `Authorization: Bearer ...` für `index.json`,
-`release.json`, Blob-Metadaten und Artefakt-Downloads. Auch direkte Blob-Befehle
-verwenden dieselbe Identität. Das Token hat Vorrang vor jeder gültigen `auth`-Option,
-WAM, Service Principals, Workload Identity und Managed Identity. Ohne die Variable
-bleibt die bisherige Authentifizierung erhalten. Ein leerer Wert zählt als gesetzt
-und führt zum Fehler. Der Helfer lehnt auch Whitespace, Steuerzeichen, ein
-`Bearer `-Präfix und andere ungültige Bearer-Syntax ab. Azure validiert die Claims
-und die Signatur; das Plugin verlangt kein bestimmtes JWT-Format.
+The plugin sends the token as `Authorization: Bearer ...` for `index.json`,
+`release.json`, blob metadata, and artifact downloads. Direct blob commands use
+the same identity. The token takes precedence over every valid `auth` option,
+WAM, service principals, workload identity, and managed identity. Without the
+variable, the existing authentication remains. An empty value counts as set and
+fails. The helper also rejects whitespace, control characters, a `Bearer `
+prefix, and other invalid bearer syntax. Azure validates the claims and
+signature; the plugin does not require a specific JWT format.
 
-HTTP 401 und 403 sowie Fehler bei der Token-Validierung beenden den Vorgang.
-Es gibt keinen Wechsel auf eine andere Identität oder einen interaktiven Login.
-Bei 401 muss der Aufrufer Audience, Gültigkeit und Identität prüfen und bei Bedarf
-ein neues Token beschaffen. Bei 403 sind die Datenebenenrechte und Netzwerkregeln
-zu prüfen. `CS_*`-Signierzugangsdaten dürfen niemals für Blob-Zugriffe dienen.
+HTTP 401 and 403, and token validation failures, end the operation. There is no
+switch to another identity and no interactive login. On 401, the caller must
+check audience, validity, and identity, then obtain a new token if needed. On
+403, check data-plane permissions and network rules. `CS_*` code-signing
+credentials must never be used for blob access.
 
-## Lebensdauer und Rechte
+## Lifetime and permissions
 
-Der Aufrufer ist für Beschaffung und Erneuerung verantwortlich. Der Helfer kann
-das vorgegebene Token nicht erneuern und speichert es nur im Prozessspeicher.
-Die SDK-Cache-Zeit verlängert seine tatsächliche Gültigkeit nicht. Vor längeren
-Installationen muss der Task ein ausreichend lange gültiges Token beschaffen.
-Ein neues Token im Elternprozess ändert nicht das Environment eines bereits
-laufenden Helfers. Nach Ablauf ist ein neuer Aufruf mit einem neuen Token nötig.
+The caller is responsible for acquiring and renewing the token. The helper cannot
+renew a supplied token and keeps it only in process memory. The SDK token cache
+does not extend its actual lifetime. Before longer installations, the task must
+obtain a token with a sufficiently long lifetime. A new token in the parent
+process does not change the environment of an already running helper. After
+expiry, a new invocation with a new token is required.
 
-Die Identität der Service Connection benötigt bestehende Datenebenenrechte am
-Zielcontainer, zum Lesen etwa `Storage Blob Data Reader`. Eine ARM-Rolle allein
-gewährt keinen Blob-Datenzugriff. Netzwerkregeln und Private Endpoints gelten
-weiterhin. Die Einführung dieses Plugins ändert keine Azure-Berechtigungen.
+The service-connection identity needs existing data-plane permissions on the
+target container, for example `Storage Blob Data Reader` to read. An ARM role
+alone does not grant blob data access. Network rules and private endpoints still
+apply. Introducing this plugin does not change any Azure permissions.
 
-## Deployment-Reihenfolge
+## Deployment order
 
-1. Im Repository `SNcom-GmbH/az-mise-plugin` die Helfer-Binaries für `v0.5.0`
-   und `SHA256SUMS` veröffentlichen. Beide Plattform-Assets müssen verfügbar sein:
-   `azure-blob-linux-amd64-musl.tar.gz` und `azure-blob-windows-amd64.zip`.
-2. Danach die aktualisierte Lua-Revision bereitstellen. Sie lädt genau den
-   v0.5.0-Helfer aus dem neuen Repository.
-3. In den Consumer-Repositories die Plugin-URLs auf
-   `https://github.com/SNcom-GmbH/az-mise-plugin.git` und die Commit-Pins auf den
-   vollständigen SHA dieser Revision aktualisieren. Bestehende Pins wechseln
-   weder Repository noch Helferversion automatisch. Lockfiles weiterhin verwenden.
-4. Erst danach die Service-Connection-Unterstützung von InstallBuilder@2 aktivieren
-   und `az-development` verwenden. Der Task muss `AZURE_BLOB_STORAGE_TOKEN` setzen;
-   bisherige Variablennamen werden nicht unterstützt.
+1. In `SNcom-GmbH/az-mise-plugin`, publish the helper binaries and `SHA256SUMS`
+   for the release. Both platform assets must be available:
+   `azure-blob-linux-amd64-musl.tar.gz` and `azure-blob-windows-amd64.zip`.
+2. Then provide the updated Lua revision. It loads the helper from the new
+   repository at the published version.
+3. In consumer repositories, update the plugin URLs to
+   `https://github.com/SNcom-GmbH/az-mise-plugin.git` and the commit pins to the
+   full SHA of that revision. Existing pins do not switch repository or helper
+   version automatically. Keep using lockfiles.
+4. Only then enable InstallBuilder@2 service-connection support and use
+   `az-development`. The task must set `AZURE_BLOB_STORAGE_TOKEN`; earlier
+   variable names are not supported.
 
-Private GitHub-Release-Assets benötigen zusätzlich `GITHUB_TOKEN` oder `GH_TOKEN`
-mit Leserechten auf das neue Repository. SSH-Zugriff auf das Plugin allein genügt
-nicht. Das Storage-Token ersetzt diese GitHub-Zugangsdaten nicht.
+Private GitHub release assets additionally need `GITHUB_TOKEN` or `GH_TOKEN`
+with read access to the new repository. SSH access to the plugin alone is not
+enough. The storage token does not replace these GitHub credentials.
 
-Die Task-Implementierung und ihre Eingaben liegen im InstallBuilder-Repository.
-Dieses Plugin implementiert den Environment-Vertrag; es aktiviert keinen Task,
-veröffentlicht kein Release und löst keine Pipeline aus.
+The task implementation and its inputs live in the InstallBuilder repository.
+This plugin implements the environment contract; it does not enable a task,
+publish a release, or trigger a pipeline.
 
-## Prüfung
+## Verification
 
-`mise run check` prüft Rust-Formatierung, Clippy, Unit-Tests und echte mise-/Lua-
-Integration ohne Azure-Zugriff. Die Tests verwenden ausschließlich künstliche
-Zugangsdaten. Sie prüfen direkte und verschachtelte Prozesse, `mise install
---locked`, die SDK-Authorization-Header für Index, Manifest und Artefakt,
-Token-Vorrang, Redaktion, HTTP 401/403 und die bisherige Environment-Anmeldung.
+`mise run check` runs Rust formatting, Clippy, unit tests, and real mise/Lua
+integration tests without Azure access. The tests use artificial credentials
+only. They cover direct and nested processes, `mise install --locked`, the SDK
+authorization headers for index, manifest, and artifact, token precedence,
+redaction, HTTP 401/403, and the existing environment login.
 
-Vor der Aktivierung bleibt ein Test im Zieltenant erforderlich: mit der
-Service Connection `az-development`, auch in ihrer föderierten Variante, auf
-Windows- und Linux-Agents installieren. Dabei Token-Ablauf, fehlende Blob-Rechte,
-Netzwerkregeln und private GitHub-Downloads prüfen. Erfolgreiche lokale Tests
-ersetzen diesen Test nicht. Keine Token-Werte in das Testprotokoll aufnehmen.
+Before activation, a test in the target tenant is still required: install with
+the `az-development` service connection, including its federated variant, on
+Windows and Linux agents. Check token expiry, missing blob permissions, network
+rules, and private GitHub downloads. Successful local tests do not replace this
+test. Do not put token values in the test record. See
+[security and operations](security.md) and the
+[workplace test](workplace-test.md).
