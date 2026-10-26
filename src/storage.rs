@@ -163,28 +163,9 @@ mod tests {
 	use super::*;
 	use azure_core::{
 		Bytes,
-		credentials::{AccessToken, TokenRequestOptions},
 		http::{AsyncRawResponse, HttpClient, Request, StatusCode, headers::Headers},
-		time::{Duration, OffsetDateTime},
 	};
 	use std::{collections::VecDeque, sync::Mutex};
-
-	#[derive(Debug)]
-	struct Credential;
-	#[async_trait::async_trait]
-	impl TokenCredential for Credential {
-		async fn get_token(
-			&self,
-			scopes: &[&str],
-			_: Option<TokenRequestOptions<'_>>,
-		) -> azure_core::Result<AccessToken> {
-			assert_eq!(scopes, [crate::config::SCOPE]);
-			Ok(AccessToken::new(
-				"mock-token-not-a-real-secret",
-				OffsetDateTime::now_utc() + Duration::hours(1),
-			))
-		}
-	}
 
 	#[derive(Debug)]
 	struct Http {
@@ -230,7 +211,9 @@ mod tests {
 		});
 		let client = BlobContainerClient::new(
 			Url::parse("https://account.blob.core.windows.net/tools")?,
-			Some(Arc::new(Credential)),
+			Some(Arc::new(crate::auth::StorageTokenCredential::new(
+				"mock-token-not-a-real-secret".into(),
+			)?)),
 			Some(BlobContainerClientOptions {
 				client_options: ClientOptions {
 					transport: Some(Transport::new(http.clone())),
@@ -241,6 +224,89 @@ mod tests {
 		)
 		.map_err(sdk_error)?;
 		Ok((AzureStorage(client), http))
+	}
+
+	fn blob_response(body: Vec<u8>) -> (StatusCode, Headers, Bytes) {
+		let mut headers = Headers::new();
+		headers.insert("content-length", body.len().to_string());
+		(StatusCode::Ok, headers, Bytes::from(body))
+	}
+
+	#[tokio::test]
+	async fn supplied_token_authorizes_index_manifest_and_artifact() -> Result<()> {
+		use sha2::{Digest, Sha256};
+		use std::io::Cursor;
+		let root = tempfile::tempdir()?;
+		let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+		archive.start_file("bin/hello", zip::write::SimpleFileOptions::default())?;
+		archive.write_all(b"hello")?;
+		let bytes = archive.finish()?.into_inner();
+		let manifest = json!({"platforms": {"linux-amd64": {
+			"file": "hello.zip", "sha256": hex::encode(Sha256::digest(&bytes))
+		}}})
+		.to_string()
+		.into_bytes();
+		let (store, http) = storage(vec![
+			blob_response(br#"{"versions":["1.0.0"]}"#.to_vec()),
+			blob_response(manifest),
+			blob_response(bytes),
+		])?;
+		let mut request: crate::config::Request = serde_json::from_value(json!({
+			"action": "versions", "tool": "hello", "version": "1.0.0", "platform": "linux-amd64",
+			"options": {"storage_url": "https://account.blob.core.windows.net/tools"},
+			"install_path": root.path().join("install"), "download_path": root.path().join("downloads")
+		}))?;
+		assert_eq!(
+			crate::dispatch(&store, &request).await?,
+			json!({"versions": ["1.0.0"]})
+		);
+		request.action = "install".into();
+		crate::dispatch(&store, &request).await?;
+		assert_eq!(fs::read(root.path().join("install/bin/hello"))?, b"hello");
+		let requests = http.requests.lock().expect("test mutex");
+		assert_eq!(requests.len(), 3);
+		for (request, blob) in requests.iter().zip([
+			"hello/index.json",
+			"hello/1.0.0/release.json",
+			"hello/1.0.0/hello.zip",
+		]) {
+			assert!(
+				Url::parse(&request.0)?
+					.path()
+					.replace("%2F", "/")
+					.ends_with(blob)
+			);
+			assert!(!request.0.contains("mock-token"));
+		}
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn rejected_token_fails_reads_and_downloads_without_identity_fallback() -> Result<()> {
+		let root = tempfile::tempdir()?;
+		for status in [StatusCode::Unauthorized, StatusCode::Forbidden] {
+			for download in [false, true] {
+				let mut headers = Headers::new();
+				headers.insert("x-ms-error-code", "AuthenticationFailed");
+				let (store, http) = storage(vec![(status, headers, Bytes::from_static(
+					b"<Error><Code>AuthenticationFailed</Code><Message>mock-token-not-a-real-secret</Message></Error>"
+				))])?;
+				let target = root.path().join("artifact");
+				let result = if download {
+					store.download("hello/1.0.0/hello.zip", &target, None).await
+				} else {
+					store.read("hello/1.0.0/release.json").await.map(|_| ())
+				};
+				let error = result.expect_err("token rejected");
+				assert!(!error.is::<crate::auth::AuthenticationRequired>());
+				let message = format!("{error:#}");
+				assert!(message.contains(&format!("HTTP {status}")));
+				assert!(!message.contains("mock-token"));
+				assert!(!target.exists());
+				assert_eq!(http.requests.lock().expect("test mutex").len(), 1);
+			}
+		}
+		Ok(())
 	}
 
 	#[tokio::test]

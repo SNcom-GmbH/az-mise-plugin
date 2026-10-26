@@ -7,7 +7,7 @@ Rustls. Nur **Windows und Linux x86-64**; keine Azure CLI erforderlich.
 
 ```toml
 [plugins]
-azure-ac = "https://github.com/DominicWrege/az-mise-plugin.git#main"
+azure-ac = "https://github.com/SNcom-GmbH/az-mise-plugin.git#main"
 
 [tools]
 "azure-ac:mein-tool" = { version = "1.2.3", storage_url = "https://firma.blob.core.windows.net/tools" }
@@ -20,7 +20,7 @@ mise ls-remote azure-ac:mein-tool
 mise exec -- mein-tool --version
 ```
 
-Der Helfer wird automatisch aus GitHub-Release `v0.3.0` geladen. Das Release muss
+Der Helfer wird automatisch aus GitHub-Release `v0.4.0` geladen. Das Release muss
 veröffentlicht sein; private Downloads benötigen `GITHUB_TOKEN` oder `GH_TOKEN`.
 Für Produktion den Plugin-Ref auf einen vollständigen Commit-SHA pinnen.
 
@@ -29,6 +29,13 @@ unabhängig von `release.json`; bei Abweichung wird nichts installiert.
 
 ## Anmeldung
 
+- **Azure DevOps mit InstallBuilder@2:** Der Task verwendet die ARM-Service-
+  Connection `az-development`, auch mit Workload Identity Federation, und holt ein
+  Access Token für `https://storage.azure.com/.default`. Er übergibt es ausschließlich
+  als `AZURE_AC_STORAGE_TOKEN` im Prozess-Environment an `mise install --locked`.
+  Dieses Token hat Vorrang vor allen Identitäten und jeder gültigen `auth`-Option.
+  Der Aufrufer beschafft und erneuert es; der Helfer kann es nicht erneuern.
+  Details und Einführungsreihenfolge: [Azure-DevOps-Vertrag](docs/azure-devops.md).
 - **Windows:** Firmenkonto über WAM, möglichst still; kein Browser-/Device-Code-Login.
   Optional `tenant_id` und `client_id` als Tool-Optionen setzen.
 - **Azure Pipelines/Linux:** Service Principal mit `AZURE_TENANT_ID`,
@@ -36,9 +43,18 @@ unabhängig von `release.json`; bei Abweichung wird nichts installiert.
   setzen oder die automatische Erkennung verwenden. `tenant_id`/`client_id` als
   Tool-Optionen haben Vorrang vor den `AZURE_*`-Variablen. Secrets nur aus dem
   Pipeline-Secret-Store als Umgebungsvariablen übergeben, niemals einchecken.
+- **Workload Identity ohne vorab beschafftes Storage-Token:** `AZURE_TENANT_ID`,
+  `AZURE_CLIENT_ID` und `AZURE_FEDERATED_TOKEN_FILE` setzen, optional
+  `auth = "workload"`. Die Datei enthält die föderierte Assertion für den
+  Token-Austausch, kein Storage-Access-Token.
 - **Managed Identity:** `auth = "managed"`, optional
   `managed_identity_client_id = "..."` für eine benutzerzugewiesene Identität.
 - Lesen: **Storage Blob Data Reader**. Hochladen: **Storage Blob Data Contributor**.
+
+Ein gesetztes, aber leeres oder syntaktisch ungültiges `AZURE_AC_STORAGE_TOKEN`
+führt zum Fehler. Auch bei HTTP 401/403 gibt es keinen Wechsel auf eine andere
+Identität oder einen interaktiven Login. Ohne diese Variable bleibt die bisherige
+Authentifizierung erhalten. `CS_*`-Signierzugangsdaten dienen niemals dem Blob-Zugriff.
 
 Echtes Windows-/Entra-SSO ist noch auf dem Arbeitsrechner zu prüfen:
 [Testcheckliste](docs/workplace-test.md). Betriebs- und Sicherheitshinweise:
@@ -75,6 +91,8 @@ diese Grenze.
 Vor dem ersten Release `AZURE_AC_HELPER` auf das lokal gebaute Binary oder ein
 entpacktes CI-Artefakt setzen. CI baut statisches Linux-musl und Windows mit statischer
 C-Runtime. Ein `v*`-Tag veröffentlicht die Binaries und `SHA256SUMS` als GitHub-Release.
+Die Tests laufen ohne Azure-Zugriff. Sie prüfen echte SDK-Authorization-Header und
+direkte sowie verschachtelte mise-Prozesse mit Testzugangsdaten, auch bei Trace-Logs.
 
 ## Lizenz
 

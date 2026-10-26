@@ -2,6 +2,16 @@
 
 ## Identitäten und Optionen
 
+- **Vorgegebenes Storage-Token:** Sobald `AZURE_AC_STORAGE_TOKEN` gesetzt ist,
+  verwendet der Helfer ausschließlich dieses Bearer-Token für Blob-Metadaten,
+  Indizes, Manifeste und Artefakte. Es hat Vorrang vor allen anderen Identitäten
+  und gültigen `auth`-Modi, auch `broker`, `environment`, `workload` und `managed`.
+  Der Wert muss ein nichtleeres Token gemäß Bearer-Syntax ohne `Bearer `-Präfix,
+  Leerzeichen oder Steuerzeichen sein. Das Plugin behandelt Tokens als opake
+  Werte; Azure prüft Signatur, Audience und Ablauf. Ungültige Werte und HTTP
+  401/403 beenden den Vorgang ohne Identitätswechsel oder WAM-Dialog.
+  Der Aufrufer beschafft und erneuert das Token. Der Helfer besitzt keine
+  Refresh-Credentials. Siehe [Azure DevOps](azure-devops.md).
 - **Windows/WAM:** `tenant_id` und `client_id` sind Tool-Optionen. Sie gelten für
   den WAM-Broker und werden nicht als Secret gespeichert. Der Standard-Client ist
   die öffentliche Azure-CLI-App; Unternehmensrichtlinien können ihn blockieren.
@@ -15,6 +25,8 @@
   Identität versucht.
 - **Kein Browser-/Device-Code-Login, kein Azure-CLI-Fallback.** Auf Linux werden
   fehlende CI-Identitäten ohne interaktiven Fallback abgelehnt.
+- Ohne `AZURE_AC_STORAGE_TOKEN` bleibt die vorhandene Identitätsauswahl erhalten.
+  `CS_*`-Signierzugangsdaten werden niemals für Azure Blob Storage verwendet.
 
 ## WAM und App-Registrierung
 
@@ -80,6 +92,12 @@ den Container hat, kann beide ersetzen.
 
 - Secrets werden nur aus Umgebungsvariablen gelesen und nicht in Tool-Optionen,
   Kommandozeilen oder Logs geschrieben.
+- `AZURE_AC_STORAGE_TOKEN` gelangt als Umgebungsvariable durch Lua und das
+  verschachtelte `mise exec` zum Helfer. Es gehört niemals in Request-JSON,
+  Konfiguration, Lockfiles, Caches, Artefakte oder Pipeline-Output-Variablen.
+  Der Rust-Credential-Typ redigiert Debug-Ausgaben; Lua und der Helfer redigieren
+  das Token auch in Fehlerkontexten. Keine eigenen Environment-Dumps oder
+  Shell-Traces im aufrufenden Task aktivieren.
 - Fehlermeldungen enthalten HTTP-Status und einen gefilterten Azure-Fehlercode,
   aber keine Response-Bodies. Ein gesondertes `--debug` gibt es nicht;
   `RUST_BACKTRACE=1` bleibt eine bewusste Debug-Option.

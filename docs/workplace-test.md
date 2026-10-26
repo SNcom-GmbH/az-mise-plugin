@@ -53,6 +53,12 @@ Device-Code-Fallback umgehen. Details: [security.md](security.md).
 
 ## Linux/CI
 
+Für InstallBuilder@2 mit der ARM-Service-Connection `az-development` gilt der
+[Azure-DevOps-Vertrag und die Deployment-Reihenfolge](azure-devops.md). Im Zieltenant
+auch Workload Identity Federation, Token-Ablauf und HTTP 401/403 ohne Identitätswechsel
+prüfen. Der Task übergibt das Storage-Token ausschließlich als
+`AZURE_AC_STORAGE_TOKEN` an `mise install --locked`; der Helfer kann es nicht erneuern.
+
 1. Statischen musl-Helfer in einem Agent/Container mit CA-Zertifikaten verwenden.
 2. Entweder `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_FEDERATED_TOKEN_FILE` setzen
    oder einen Service Principal mit `AZURE_CLIENT_SECRET` aus dem CI-Secret-Store.

@@ -1,5 +1,5 @@
 [plugins]
-azure-ac = "https://github.com/DominicWrege/az-mise-plugin.git#main"
+azure-ac = "https://github.com/SNcom-GmbH/az-mise-plugin.git#main"
 
 [tools]
 "azure-ac:hello" = { version = "1.0.0", storage_url = "https://youraccount.blob.core.windows.net/tools" }

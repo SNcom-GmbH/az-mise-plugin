@@ -1,68 +1,21 @@
+mod command;
+
 use anyhow::{Context, Result};
 use azure_ac::{
 	auth::{self, AuthenticationRequired},
-	config::{DEFAULT_CLIENT, Options, Request, noninteractive},
+	config::{Options, Request, noninteractive},
 	storage::AzureStorage,
 };
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use command::{Cli, Command};
 use serde_json::json;
-use std::path::PathBuf;
-
-#[derive(Parser)]
-#[command(
-	version,
-	about = "Azure Blob helper: native Windows WAM and Linux CI credentials; no browser login"
-)]
-struct Cli {
-	#[arg(long)]
-	storage_url: Option<String>,
-	#[arg(long, default_value = "organizations")]
-	tenant_id: String,
-	#[arg(long, default_value = DEFAULT_CLIENT)]
-	client_id: String,
-	#[arg(long, default_value = "auto")]
-	auth: String,
-	#[arg(long)]
-	managed_identity_client_id: Option<String>,
-	#[command(subcommand)]
-	command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-	#[command(hide = true)]
-	Hook,
-	Login,
-	List {
-		#[arg(long, default_value = "")]
-		prefix: String,
-		#[arg(long)]
-		limit: Option<usize>,
-	},
-	Versions {
-		tool: String,
-	},
-	Read {
-		blob: String,
-	},
-	Download {
-		blob: String,
-		file: PathBuf,
-	},
-	Upload {
-		blob: String,
-		file: PathBuf,
-		#[arg(long)]
-		overwrite: bool,
-	},
-}
 
 #[tokio::main]
 async fn main() {
 	azure_ac::initialize_tls();
 	if let Err(error) = run().await {
-		// sdk_error sanitizes SDK failures, so showing the context chain is safe.
-		eprintln!("azure-ac: {error:#}");
+		// SDK errors omit response bodies; also redact caller-controlled context.
+		eprintln!("azure-ac: {}", auth::redact(&format!("{error:#}")));
 		std::process::exit(1);
 	}
 }

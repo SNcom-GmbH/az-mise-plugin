@@ -21,7 +21,7 @@ function M.run(action, ctx)
 		MISE_NO_CONFIG = "1",
 		AZURE_AC_MISE = os.getenv("MISE_BIN") or "mise",
 		-- Exact helper release and platform asset: never select a different platform.
-		AZURE_AC_HELPER_TOOL = "github:DominicWrege/az-mise-plugin[asset_pattern=" .. asset .. "]@0.3.0",
+		AZURE_AC_HELPER_TOOL = "github:SNcom-GmbH/az-mise-plugin[asset_pattern=" .. asset .. "]@0.4.0",
 		AZURE_AC_REQUEST = json.encode({
 			action = action,
 			tool = ctx.tool,
@@ -32,6 +32,29 @@ function M.run(action, ctx)
 			download_path = ctx.download_path,
 		}),
 	}
+	-- Explicitly preserve this environment-only credential through cmd.exec and
+	-- the nested mise exec. Never interpolate it into command text or JSON.
+	local storage_token = os.getenv("AZURE_AC_STORAGE_TOKEN")
+	if storage_token ~= nil then
+		env.AZURE_AC_STORAGE_TOKEN = storage_token
+	end
+	local function execute(command)
+		local ok, output = pcall(cmd.exec, command, { env = env })
+		if not ok then
+			-- cmd.exec includes child stderr in its error. Use plain matching so
+			-- punctuation in opaque tokens cannot act as a Lua pattern.
+			output = tostring(output)
+			if storage_token and #storage_token > 0 then
+				local start = output:find(storage_token, 1, true)
+				while start do
+					output = output:sub(1, start - 1) .. "[redacted]" .. output:sub(start + #storage_token)
+					start = output:find(storage_token, start + #"[redacted]", true)
+				end
+			end
+			error(output, 0)
+		end
+		return json.decode(output)
+	end
 	-- The optional local override is only for development/offline testing. All
 	-- production installs use mise's verified prebuilt GitHub release backend.
 	local override = os.getenv("AZURE_AC_HELPER")
@@ -49,8 +72,11 @@ function M.run(action, ctx)
 			command = [["%AZURE_AC_MISE%" exec "%AZURE_AC_HELPER_TOOL%" -- azure-ac hook]]
 		end
 	end
-	local result = json.decode(cmd.exec(command, { env = env }))
+	local result = execute(command)
 	if result.authentication_required then
+		if storage_token ~= nil then
+			error("Azure storage token rejected; the caller must acquire a new token")
+		end
 		if os.getenv("CI") or os.getenv("AZURE_AC_NONINTERACTIVE") == "1" then
 			error("Azure sign-in required; configure a CI identity or sign in on a Windows desktop")
 		end
@@ -59,7 +85,7 @@ function M.run(action, ctx)
 			error("Azure WAM sign-in failed")
 		end
 		env.AZURE_AC_LOGIN = "0"
-		result = json.decode(cmd.exec(command, { env = env }))
+		result = execute(command)
 		if result.authentication_required then
 			error("Azure still requires authentication after WAM login")
 		end

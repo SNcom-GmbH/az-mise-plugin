@@ -2,12 +2,74 @@
 mod wam;
 
 use crate::config::{DEFAULT_CLIENT, Options, SCOPE};
-use anyhow::{Context, Result, anyhow, bail};
-use azure_core::credentials::TokenCredential;
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use azure_core::{
+	credentials::{AccessToken, Secret, TokenCredential, TokenRequestOptions},
+	time::{Duration, OffsetDateTime},
+};
 use azure_identity::{
-	ClientSecretCredential, ManagedIdentityCredential, WorkloadIdentityCredential,
+	ClientSecretCredential, ClientSecretCredentialOptions, ManagedIdentityCredential,
+	WorkloadIdentityCredential,
 };
 use std::{env, sync::Arc};
+
+pub const STORAGE_TOKEN_ENV: &str = "AZURE_AC_STORAGE_TOKEN";
+
+/// A caller-owned bearer token. No discovery, refresh, or identity fallback.
+#[derive(Debug)]
+pub(crate) struct StorageTokenCredential(Secret);
+
+impl StorageTokenCredential {
+	pub(crate) fn new(token: String) -> Result<Self> {
+		// RFC 6750 b64token syntax. Treat access tokens as opaque: Azure validates
+		// audience, expiry and signature. Do not trim or accept a Bearer prefix.
+		let value = token.trim_end_matches('=');
+		ensure!(
+			!value.is_empty()
+				&& value
+					.bytes()
+					.all(|b| b.is_ascii_alphanumeric() || b"-._~+/".contains(&b)),
+			"AZURE_AC_STORAGE_TOKEN must contain a nonempty bearer token without whitespace or a Bearer prefix"
+		);
+		Ok(Self(Secret::new(token)))
+	}
+}
+
+#[async_trait::async_trait]
+impl TokenCredential for StorageTokenCredential {
+	async fn get_token(
+		&self,
+		scopes: &[&str],
+		_: Option<TokenRequestOptions<'_>>,
+	) -> azure_core::Result<AccessToken> {
+		if scopes != [SCOPE] {
+			return Err(azure_core::Error::with_message(
+				azure_core::error::ErrorKind::Credential,
+				"Supplied storage token only supports the Azure Storage scope",
+			));
+		}
+		// This timestamp only controls the SDK's in-memory cache. It does not
+		// extend the real token lifetime. Every call returns the same token;
+		// Azure rejects expiry and the caller must acquire a replacement.
+		Ok(AccessToken::new(
+			self.0.clone(),
+			OffsetDateTime::now_utc() + Duration::hours(1),
+		))
+	}
+}
+
+/// Redact even errors whose context contains caller-controlled paths or values.
+pub fn redact(message: &str) -> String {
+	let mut message = message.to_owned();
+	for name in [STORAGE_TOKEN_ENV, "AZURE_CLIENT_SECRET"] {
+		if let Ok(secret) = env::var(name)
+			&& !secret.trim().is_empty()
+		{
+			message = message.replace(&secret, "[redacted]");
+		}
+	}
+	message
+}
 
 fn option_or_env(option: &str, default: &str, env_name: &str) -> Result<String> {
 	if option != default {
@@ -66,6 +128,9 @@ pub fn sdk_error(error: azure_core::Error) -> anyhow::Error {
 			let code = u16::from(*status);
 			let hint = match code {
 				400 => "the request was rejected; check storage_url and the blob name",
+				401 if env::var_os(STORAGE_TOKEN_ENV).is_some() => {
+					"the supplied storage token was rejected; the caller must acquire a new token for the storage audience"
+				}
 				401 => {
 					"the token was rejected; sign in again and check tenant, client and storage audience"
 				}
@@ -84,7 +149,7 @@ pub fn sdk_error(error: azure_core::Error) -> anyhow::Error {
 			};
 			anyhow!(
 				"Azure request failed (HTTP {status}{}); {hint}",
-				safe_code(error_code.as_deref())
+				redact(&safe_code(error_code.as_deref()))
 			)
 		}
 		azure_core::error::ErrorKind::Connection => {
@@ -106,6 +171,21 @@ pub fn sdk_error(error: azure_core::Error) -> anyhow::Error {
 }
 
 pub async fn credential(options: &Options, interactive: bool) -> Result<Arc<dyn TokenCredential>> {
+	credential_with_environment_options(options, interactive, None).await
+}
+
+async fn credential_with_environment_options(
+	options: &Options,
+	interactive: bool,
+	environment_options: Option<ClientSecretCredentialOptions>,
+) -> Result<Arc<dyn TokenCredential>> {
+	// Presence, including an empty/non-Unicode value, is authoritative. Validate
+	// before considering auth modes, CI guards, broker or any Azure identity.
+	match env::var(STORAGE_TOKEN_ENV) {
+		Ok(token) => return Ok(Arc::new(StorageTokenCredential::new(token)?)),
+		Err(env::VarError::NotUnicode(_)) => bail!("AZURE_AC_STORAGE_TOKEN must be valid Unicode"),
+		Err(env::VarError::NotPresent) => {}
+	}
 	let mode = options.auth.as_str();
 	if env::var_os("CI").is_some()
 		&& mode == "auto"
@@ -127,7 +207,7 @@ pub async fn credential(options: &Options, interactive: bool) -> Result<Arc<dyn 
 			env::var("AZURE_CLIENT_SECRET")
 				.map_err(|_| anyhow!("AZURE_CLIENT_SECRET is required"))?
 				.into(),
-			None,
+			environment_options,
 		)
 		.map_err(sdk_error)?
 	} else if mode == "workload"
@@ -176,7 +256,165 @@ pub async fn credential(options: &Options, interactive: bool) -> Result<Arc<dyn 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use azure_core::{error::ErrorKind, http::StatusCode};
+	use azure_core::{
+		Bytes,
+		error::ErrorKind,
+		http::{
+			AsyncRawResponse, Body, ClientOptions, HttpClient, Request, StatusCode, Transport,
+			headers::Headers,
+		},
+	};
+	use std::{
+		process::Command,
+		sync::atomic::{AtomicUsize, Ordering},
+	};
+
+	#[derive(Debug)]
+	struct IdentityHttp {
+		status: StatusCode,
+		calls: AtomicUsize,
+	}
+
+	#[async_trait::async_trait]
+	impl HttpClient for IdentityHttp {
+		async fn execute_request(&self, request: &Request) -> azure_core::Result<AsyncRawResponse> {
+			self.calls.fetch_add(1, Ordering::SeqCst);
+			assert_eq!(
+				request.url().as_str(),
+				"https://login.microsoftonline.com/integration-tenant/oauth2/v2.0/token"
+			);
+			let Body::Bytes(body) = request.body() else {
+				panic!("Expected identity form body")
+			};
+			let form: std::collections::HashMap<_, _> =
+				url::form_urlencoded::parse(body).into_owned().collect();
+			assert_eq!(form["client_id"], "integration-client");
+			assert_eq!(form["client_secret"], "integration-client-secret");
+			assert_eq!(form["scope"], SCOPE);
+			let body = if self.status == StatusCode::Ok {
+				br#"{"access_token":"environment-storage-token","expires_in":3600,"token_type":"Bearer"}"#.as_slice()
+			} else {
+				br#"{"error":"invalid_client","error_description":"integration-client-secret"}"#
+					.as_slice()
+			};
+			Ok(AsyncRawResponse::from_bytes(
+				self.status,
+				Headers::new(),
+				Bytes::from_static(body),
+			))
+		}
+	}
+
+	#[test]
+	fn environment_authentication_succeeds_and_fails_without_fallback() -> Result<()> {
+		for mode in ["auto", "environment"] {
+			let mut child = Command::new(env::current_exe()?);
+			for (key, _) in env::vars_os() {
+				if key.to_string_lossy().starts_with("AZURE_") {
+					child.env_remove(key);
+				}
+			}
+			let output = child
+				.args(["--exact", "auth::tests::environment_authentication_child"])
+				.env("AZURE_AC_TEST_CHILD", mode)
+				.env("CI", "1")
+				.env("AZURE_TENANT_ID", "integration-tenant")
+				.env("AZURE_CLIENT_ID", "integration-client")
+				.env("AZURE_CLIENT_SECRET", "integration-client-secret")
+				.output()?;
+			assert!(
+				output.status.success(),
+				"Environment auth regression: {}",
+				String::from_utf8_lossy(&output.stdout)
+			);
+		}
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn environment_authentication_child() -> Result<()> {
+		// Use a child process so tests never mutate shared process credentials.
+		let Ok(mode) = env::var("AZURE_AC_TEST_CHILD") else {
+			return Ok(());
+		};
+		let options: Options = serde_json::from_value(serde_json::json!({
+			"storage_url": "https://account.blob.core.windows.net/tools", "auth": mode
+		}))?;
+		for status in [StatusCode::Ok, StatusCode::BadRequest] {
+			let http = Arc::new(IdentityHttp {
+				status,
+				calls: AtomicUsize::new(0),
+			});
+			let result = credential_with_environment_options(
+				&options,
+				false,
+				Some(ClientSecretCredentialOptions {
+					client_options: ClientOptions {
+						transport: Some(Transport::new(http.clone())),
+						..Default::default()
+					},
+				}),
+			)
+			.await;
+			if status == StatusCode::Ok {
+				let credential = result?;
+				let token = credential.get_token(&[SCOPE], None).await?;
+				assert_eq!(token.token.secret(), "environment-storage-token");
+				assert!(!format!("{credential:?}").contains("integration-client-secret"));
+			} else {
+				let error = result.expect_err("Rejected environment credential");
+				assert!(!error.is::<AuthenticationRequired>());
+				assert!(error.to_string().contains("credential"));
+				assert!(!format!("{error:#}").contains("integration-client-secret"));
+			}
+			assert_eq!(http.calls.load(Ordering::SeqCst), 1);
+		}
+		Ok(())
+	}
+
+	#[test]
+	fn supplied_tokens_are_opaque_but_must_have_bearer_syntax() {
+		for token in ["opaque-token", "header.payload.signature", "a+/~_-.=="] {
+			let credential = StorageTokenCredential::new(token.into()).expect("bearer syntax");
+			assert!(!format!("{credential:?}").contains(token));
+		}
+		for token in [
+			"",
+			" ",
+			"\t",
+			"\r\n",
+			"Bearer token",
+			" token",
+			"token\n",
+			"a=b",
+			"=",
+			"a,b",
+			"tökén",
+		] {
+			let error = StorageTokenCredential::new(token.into()).expect_err("invalid syntax");
+			assert!(
+				error
+					.to_string()
+					.starts_with("AZURE_AC_STORAGE_TOKEN must contain")
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn supplied_token_never_refreshes_or_requests_another_scope() {
+		let credential = StorageTokenCredential::new("caller-token".into()).expect("token");
+		for _ in 0..2 {
+			let token = credential.get_token(&[SCOPE], None).await.expect("token");
+			assert_eq!(token.token.secret(), "caller-token");
+			assert!(!format!("{token:?}").contains("caller-token"));
+		}
+		assert!(
+			credential
+				.get_token(&["https://management.azure.com/.default"], None)
+				.await
+				.is_err()
+		);
+	}
 
 	fn http_error(status: StatusCode, error_code: Option<&str>) -> anyhow::Error {
 		sdk_error(

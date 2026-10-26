@@ -37,6 +37,74 @@ fn success(output: Output) -> Result<String> {
 
 #[test]
 fn real_mise_lua_rust_install_and_silent_reuse() -> Result<()> {
+	run_install(None, false)
+}
+
+#[test]
+fn storage_token_survives_direct_and_nested_mise_with_debug_logging() -> Result<()> {
+	for nested in [false, true] {
+		run_install(Some("token"), nested)?;
+	}
+	Ok(())
+}
+
+#[test]
+fn environment_credentials_survive_direct_and_nested_mise() -> Result<()> {
+	for nested in [false, true] {
+		run_install(Some("environment"), nested)?;
+	}
+	Ok(())
+}
+
+#[test]
+fn supplied_token_never_retries_login_and_child_errors_are_redacted() -> Result<()> {
+	for nested in [false, true] {
+		for mode in ["required", "stderr"] {
+			run_install(Some(mode), nested)?;
+		}
+	}
+	Ok(())
+}
+
+fn assert_no_secret(output: &Output) {
+	for bytes in [&output.stdout, &output.stderr] {
+		let text = String::from_utf8_lossy(bytes);
+		assert!(
+			!text.contains("integration-storage-token"),
+			"Storage token leaked in output"
+		);
+		assert!(
+			!text.contains("integration-client-secret"),
+			"Client secret leaked in output"
+		);
+	}
+}
+
+fn assert_no_secret_files(path: &Path) -> Result<()> {
+	if !path.exists() || fs::symlink_metadata(path)?.file_type().is_symlink() {
+		return Ok(());
+	}
+	if path.is_dir() {
+		for entry in fs::read_dir(path)? {
+			assert_no_secret_files(&entry?.path())?;
+		}
+	} else {
+		let bytes = fs::read(path)?;
+		for secret in [
+			b"integration-storage-token".as_slice(),
+			b"integration-client-secret".as_slice(),
+		] {
+			assert!(
+				!bytes.windows(secret.len()).any(|window| window == secret),
+				"Secret persisted in {}",
+				path.display()
+			);
+		}
+	}
+	Ok(())
+}
+
+fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 	let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 	let debug = env::current_exe()?
 		.parent()
@@ -138,16 +206,86 @@ fn real_mise_lua_rust_install_and_silent_reuse() -> Result<()> {
 			root.path().join(key).to_string_lossy().into_owned(),
 		);
 	}
+	if let Some(mode) = auth_mode {
+		environment.insert("MOCK_AZURE_AUTH_MODE".into(), mode.into());
+		environment.insert("MISE_LOG_LEVEL".into(), "trace".into());
+		if mode == "environment" {
+			environment.insert("CI".into(), "1".into());
+			environment.insert("AZURE_TENANT_ID".into(), "integration-tenant".into());
+			environment.insert("AZURE_CLIENT_ID".into(), "integration-client".into());
+			environment.insert(
+				"AZURE_CLIENT_SECRET".into(),
+				"integration-client-secret".into(),
+			);
+		} else {
+			environment.insert(
+				"AZURE_AC_STORAGE_TOKEN".into(),
+				"integration-storage-token".into(),
+			);
+			if mode == "token" {
+				environment.insert("CI".into(), "1".into());
+			}
+		}
+	}
+	if nested {
+		// Register the test executable as an already-installed GitHub helper.
+		// The production Lua command still runs the real nested mise exec with
+		// the exact release/asset selector, without network or a published release.
+		let helper_backend = root
+			.path()
+			.join("MISE_DATA_DIR/installs/github-s-ncom-gmb-h-az-mise-plugin");
+		let fixture = helper_backend.join(env!("CARGO_PKG_VERSION"));
+		fs::create_dir_all(&fixture)?;
+		fs::copy(
+			&helper,
+			fixture.join(if cfg!(windows) {
+				"azure-ac.exe"
+			} else {
+				"azure-ac"
+			}),
+		)?;
+		fs::write(
+			helper_backend.join(".mise.backend.toml"),
+			"short = \"github:SNcom-GmbH/az-mise-plugin\"\nfull = \"github:SNcom-GmbH/az-mise-plugin\"\n",
+		)?;
+		environment.remove("AZURE_AC_HELPER");
+	}
+	if matches!(auth_mode, Some("required" | "stderr")) {
+		let failure = mise(&project, &environment, &["ls-remote", "azure-ac:hello"])?;
+		assert_no_secret(&failure);
+		assert!(!failure.status.success());
+		let error = String::from_utf8_lossy(&failure.stderr);
+		assert!(if auth_mode == Some("required") {
+			error.contains("caller must acquire a new token")
+		} else {
+			error.contains("[redacted]")
+		});
+		assert!(!root.path().join("authenticated").exists());
+		return Ok(());
+	}
 	// The project declaration installs the local plugin automatically; no manual link step.
-	assert_eq!(
-		success(mise(
+	let versions = mise(&project, &environment, &["ls-remote", "azure-ac:hello"])?;
+	assert_no_secret(&versions);
+	assert_eq!(success(versions)?.trim(), "1.0.0");
+	if auth_mode.is_some() {
+		let lock = mise(&project, &environment, &["lock"])?;
+		assert_no_secret(&lock);
+		success(lock)?;
+		let install = mise(&project, &environment, &["install", "--locked"])?;
+		assert_no_secret(&install);
+		success(install)?;
+		assert!(!root.path().join("authenticated").exists());
+		for path in [
 			&project,
-			&environment,
-			&["ls-remote", "azure-ac:hello"]
-		)?)?
-		.trim(),
-		"1.0.0"
-	);
+			&root.path().join("MISE_CACHE_DIR"),
+			&root.path().join("MISE_STATE_DIR"),
+			&root.path().join("MISE_CONFIG_DIR"),
+			&root.path().join("MISE_DATA_DIR/downloads"),
+		] {
+			assert_no_secret_files(path)?;
+		}
+		return Ok(());
+	}
 	assert!(root.path().join("authenticated").is_file());
 	success(mise(&project, &environment, &["install"])?)?;
 	let args: &[&str] = if cfg!(windows) {
