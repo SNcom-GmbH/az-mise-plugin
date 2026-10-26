@@ -33,8 +33,9 @@ fn backend_and_release_assets_match_the_binary_name() {
 	assert!(metadata.contains(&format!("name = \"{name}\"")));
 	let lua = fs::read_to_string(root.join("lib/azure.lua")).expect("lib/azure.lua");
 	let workflow = fs::read_to_string(root.join(".github/workflows/build.yml")).expect("build.yml");
+	let mise = fs::read_to_string(root.join("mise.toml")).expect("mise.toml");
 	assert!(lua.contains(&format!("-- {name} hook")));
-	assert!(workflow.contains(&format!("--bin {name}")));
+	assert!(mise.contains(&format!("--bin {name}")));
 	for suffix in ["linux-amd64-musl.tar.gz", "windows-amd64.zip"] {
 		let asset = format!("{name}-{suffix}");
 		assert!(lua.contains(&asset), "Lua must select {asset}");

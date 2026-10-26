@@ -16,6 +16,8 @@ The CLI and mise backend are named `azure-blob`; internal variables use
 Use `mise install` to install the pinned Rust toolchain, then `mise run check`
 for tests, formatting, and Clippy. Use `mise run test` rather than bare
 `cargo test`: it builds the mock helper needed by the mise integration tests.
+`mise run ci` runs the same checks and builds the release binary; CI sets
+`MISE_CI_TARGET` to build for the matrix target.
 Tests must run without Azure access or real credentials.
 
 Follow `.editorconfig` and `rustfmt.toml`. Keep test helpers under `tests/`.

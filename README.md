@@ -145,7 +145,12 @@ to 4 GiB.
 mise install
 mise run build
 mise run check
+mise run ci
 ```
+
+`mise run check` runs formatting, Clippy, and the tests. `mise run ci` also
+builds the release binary; CI sets `MISE_CI_TARGET` so the same tasks use the
+matrix target.
 
 Tests run without Azure access. Set `AZURE_BLOB_HELPER` to a local binary to test
 without a published helper release. Pushing a `v*` tag publishes Linux-musl and

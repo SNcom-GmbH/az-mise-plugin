@@ -24,6 +24,8 @@ jobs:
                       asset: "azure-blob-windows-amd64.zip"
         runs-on: "${{ matrix.runner }}"
         timeout-minutes: 25
+        env:
+            MISE_CI_TARGET: "${{ matrix.target }}"
         steps:
             - uses: "actions/checkout@v7"
             - uses: "jdx/mise-action@v5"
@@ -34,20 +36,8 @@ jobs:
               run: |
                   sudo apt-get update
                   sudo apt-get install --yes musl-tools
-            - name: "Install Rust target"
-              run: "rustup target add ${{ matrix.target }}"
-            - name: "Install check components"
-              run: "rustup component add rustfmt clippy"
-            - name: "Formatting"
-              run: "cargo fmt --all -- --check"
-            - name: "Build test-only helper"
-              run: "cargo build --locked --target ${{ matrix.target }} --features test-helper --bin mock_helper"
-            - name: "Unit and mise integration tests"
-              run: "cargo test --locked --target ${{ matrix.target }} --all-targets --features test-helper"
-            - name: "Clippy"
-              run: "cargo clippy --locked --target ${{ matrix.target }} --all-targets --features test-helper -- -D warnings"
-            - name: "Release build"
-              run: "cargo build --locked --release --target ${{ matrix.target }} --bin azure-blob"
+            - name: "Checks and release build"
+              run: "mise run ci"
             - name: "Verify and package Linux static executable"
               if: "runner.os == 'Linux'"
               shell: "bash"

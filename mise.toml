@@ -1,28 +1,38 @@
 [tools]
-rust = { version = "1.99.1", profile = "minimal", components = ["rustfmt", "clippy"] }
+rust = { version = "1.99.1", profile = "minimal", components = ["rustfmt", "clippy"], targets = "{% if env.MISE_CI_TARGET is defined %}{{ env.MISE_CI_TARGET }}{% endif %}" }
+
+[vars]
+# CI sets MISE_CI_TARGET so every task uses the matrix target. Locally this is
+# empty and Cargo builds for the host.
+cargo_target = "{% if env.MISE_CI_TARGET is defined %} --target {{ env.MISE_CI_TARGET }}{% endif %}"
 
 [tasks.build]
 description = "Build the native Rust helper"
-run = "cargo build --locked{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}"
+run = "cargo build --locked{{ vars.cargo_target }}"
 
 [tasks.test]
 description = "Run Rust unit and real mise/Lua integration tests without Azure access"
 run = [
-	"cargo build --locked --features test-helper --bin mock_helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
-	"cargo test --locked --all-targets --features test-helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %}",
+	"cargo build --locked --features test-helper --bin mock_helper{{ vars.cargo_target }}",
+	"cargo test --locked --all-targets --features test-helper{{ vars.cargo_target }}",
 ]
 
 [tasks.lint]
 description = "Check Rust formatting and lint"
 run = [
 	"cargo fmt --all -- --check",
-	"cargo clippy --locked --all-targets --features test-helper{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %} -- -D warnings",
+	"cargo clippy --locked --all-targets --features test-helper{{ vars.cargo_target }} -- -D warnings",
 ]
 
 [tasks.check]
 description = "Run all local checks"
 depends = ["test", "lint"]
 
+[tasks.ci]
+description = "Run the checks and build the release binary, as CI does"
+depends = ["check"]
+run = "cargo build --locked --release --bin azure-blob{{ vars.cargo_target }}"
+
 [tasks.blob]
 description = "Manage blobs and publish tools using plugin authentication"
-run = "cargo run --quiet --locked{% if os() == \"windows\" %} --target x86_64-pc-windows-msvc{% endif %} --"
+run = "cargo run --quiet --locked{{ vars.cargo_target }} --"
