@@ -19,8 +19,9 @@ Supports Linux and Windows x86-64; no Azure CLI required.
 [plugins]
 azure-blob = "https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.5.0"
 
-[tools]
-"azure-blob:my-tool" = { version = "1.2.3", storage_url = "https://youraccount.blob.core.windows.net/tools" }
+[tools."azure-blob:my-tool"]
+version = "1.2.3"
+storage_url = "https://youraccount.blob.core.windows.net/tools"
 ```
 
 ```sh

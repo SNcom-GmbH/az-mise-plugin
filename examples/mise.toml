@@ -1,10 +1,11 @@
 [plugins]
 azure-blob = "https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.5.0"
 
-[tools]
-"azure-blob:hello" = { version = "1.0.0", storage_url = "https://youraccount.blob.core.windows.net/tools" }
+[tools."azure-blob:hello"]
+version = "1.0.0"
+storage_url = "https://youraccount.blob.core.windows.net/tools"
 
-# Optional enterprise identity settings (same tool entry):
+# Optional enterprise identity settings (same tool table):
 # tenant_id = "your-tenant-id"
 # client_id = "your-public-client-app-id"
 #
