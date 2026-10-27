@@ -260,9 +260,10 @@ fn merge_version(index: &mut Value, version: &str) -> Result<bool> {
 		filename(name)?;
 		ensure!(seen.insert(name), "Duplicate release version {name:?}");
 	}
-	if seen.contains(version) {
-		return Ok(false);
+	let added = !seen.contains(version);
+	if added {
+		versions.push(json!(version));
 	}
-	versions.insert(0, json!(version));
-	Ok(true)
+	// Also repair indexes written newest-first by older publishers on a retry.
+	Ok(crate::versions::order(versions) || added)
 }

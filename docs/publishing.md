@@ -42,3 +42,30 @@ artifact first, updates the manifest with ETag conditions, and updates the
 version index last. Rerun the same command with the same file to resume after a
 failure. If the binary changes, give it a new version or update its version
 metadata before publishing.
+
+## Version index order
+
+`index.json` lists numeric versions oldest first. mise selects the last matching
+entry, so an index containing `1.1.2` and `1.1.3` must put `1.1.3` last:
+
+```json
+{"versions": ["1.1.2", "1.1.3"]}
+```
+
+The publisher orders three-part versions and four-part Windows versions
+numerically, including prerelease precedence. Build metadata does not change
+precedence. Other version names retain their source order before numeric
+versions. Version objects keep their timestamps and other metadata.
+
+Version listing also applies this ordering to existing indexes. Republishing
+the same release repairs an older publisher's reversed index with an
+ETag-conditional metadata update. Artifacts remain immutable, and an older
+release published later does not replace a higher numeric version as latest.
+
+After updating the plugin and helper, clear any cached version list before
+upgrading:
+
+```sh
+mise cache clear azure-blob:install-builder
+mise upgrade --bump azure-blob:install-builder
+```

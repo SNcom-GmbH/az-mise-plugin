@@ -3,6 +3,7 @@ pub mod auth;
 pub mod config;
 mod publish;
 pub mod storage;
+mod versions;
 
 pub use publish::resolve_publish_version;
 
@@ -28,17 +29,17 @@ pub async fn dispatch(store: &dyn Storage, request: &Request) -> Result<Value> {
 				.read(&format!("{tool}/index.json"))
 				.await
 				.with_context(|| format!("Could not read {tool}/index.json"))?;
-			let index: Value = serde_json::from_slice(&bytes)
+			let mut index: Value = serde_json::from_slice(&bytes)
 				.with_context(|| format!("Invalid JSON in {tool}/index.json"))?;
 			let versions = index["versions"]
-				.as_array()
+				.as_array_mut()
 				.context("index.json needs a versions array")?;
 			ensure!(
 				!versions.is_empty(),
 				"index.json needs a nonempty versions array"
 			);
 			let mut seen = HashSet::new();
-			for entry in versions {
+			for entry in versions.iter() {
 				let version = entry
 					.as_str()
 					.or_else(|| entry["version"].as_str())
@@ -49,6 +50,7 @@ pub async fn dispatch(store: &dyn Storage, request: &Request) -> Result<Value> {
 					"Duplicate release version {version:?}"
 				);
 			}
+			versions::order(versions);
 			Ok(json!({"versions": versions}))
 		}
 		"install" => install(store, request).await,

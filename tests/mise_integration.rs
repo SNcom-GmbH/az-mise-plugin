@@ -111,7 +111,7 @@ fn missing_or_empty_storage_url_explains_how_to_fix_the_tool_entry() -> Result<(
 }
 
 #[test]
-fn real_mise_lua_rust_install_and_silent_reuse() -> Result<()> {
+fn real_mise_lua_rust_install_reuse_and_upgrade() -> Result<()> {
 	run_install(None, false)
 }
 
@@ -358,6 +358,64 @@ fn run_install(auth_mode: Option<&str>, nested: bool) -> Result<()> {
 	} else {
 		&["exec", "--", "hello"]
 	};
+	assert_eq!(
+		success(mise(&project, &environment, args)?)?.trim(),
+		"from-mock"
+	);
+	// Reproduce a legacy publisher's newest-first index, with 1.1.2 installed
+	// and locked. A real mise upgrade --bump must select and install 1.1.3.
+	let tool_storage = storage.parent().context("Invalid storage path")?;
+	for version in ["1.1.2", "1.1.3"] {
+		let release = tool_storage.join(version);
+		fs::create_dir_all(&release)?;
+		for file in ["hello.zip", "release.json"] {
+			fs::copy(storage.join(file), release.join(file))?;
+		}
+	}
+	fs::write(
+		tool_storage.join("index.json"),
+		json!({"versions": ["1.1.3", "1.1.2", "1.0.0"]}).to_string(),
+	)?;
+	let config = project.join("mise.toml");
+	fs::write(
+		&config,
+		fs::read_to_string(&config)?.replace("version = \"1.0.0\"", "version = \"1.1.2\""),
+	)?;
+	success(mise(
+		&project,
+		&environment,
+		&["cache", "clear", "azure-blob:hello"],
+	)?)?;
+	success(mise(&project, &environment, &["install"])?)?;
+	success(mise(&project, &environment, &["lock"])?)?;
+	assert_eq!(
+		success(mise(
+			&project,
+			&environment,
+			&["ls-remote", "azure-blob:hello"]
+		)?)?
+		.trim(),
+		"1.0.0\n1.1.2\n1.1.3"
+	);
+	assert_eq!(
+		success(mise(
+			&project,
+			&environment,
+			&["latest", "azure-blob:hello"]
+		)?)?
+		.trim(),
+		"1.1.3"
+	);
+	success(mise(
+		&project,
+		&environment,
+		&["upgrade", "--bump", "azure-blob:hello"],
+	)?)?;
+	let config: toml::Value = toml::from_str(&fs::read_to_string(config)?)?;
+	assert_eq!(
+		config["tools"]["azure-blob:hello"]["version"].as_str(),
+		Some("1.1.3")
+	);
 	assert_eq!(
 		success(mise(&project, &environment, args)?)?.trim(),
 		"from-mock"

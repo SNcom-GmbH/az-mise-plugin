@@ -212,9 +212,9 @@ fn portable_filenames_reject_windows_names() {
 }
 
 #[tokio::test]
-async fn versions_preserve_order_and_metadata() -> Result<()> {
+async fn versions_return_oldest_first_and_preserve_metadata() -> Result<()> {
 	let root = tempfile::tempdir()?;
-	let versions = json!(["1.9.0", {"version": "1.10.0", "created_at": "2026-10-01T00:00:00Z"}]);
+	let versions = json!([{"version": "1.10.0", "created_at": "2026-10-01T00:00:00Z"}, "1.9.0"]);
 	put(
 		root.path(),
 		"hello/index.json",
@@ -226,8 +226,59 @@ async fn versions_preserve_order_and_metadata() -> Result<()> {
 			&request(root.path(), "versions")
 		)
 		.await?,
+		json!({"versions": ["1.9.0", versions[0]]})
+	);
+	assert_eq!(
+		serde_json::from_slice::<Value>(&fs::read(root.path().join("hello/index.json"))?)?,
 		json!({"versions": versions})
 	);
+	Ok(())
+}
+
+#[tokio::test]
+async fn version_order_handles_windows_revisions_prereleases_and_opaque_names() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	for (input, expected) in [
+		(
+			json!(["1.1.3.10", "1.1.3.2", "1.1.3", "1.1.3.0"]),
+			json!(["1.1.3", "1.1.3.0", "1.1.3.2", "1.1.3.10"]),
+		),
+		(
+			json!([
+				"v2.0.0",
+				"1.9.0",
+				"2.0.0-rc.10",
+				"2.0.0-rc.2",
+				"2.0.0-alpha-"
+			]),
+			json!([
+				"1.9.0",
+				"2.0.0-alpha-",
+				"2.0.0-rc.2",
+				"2.0.0-rc.10",
+				"v2.0.0"
+			]),
+		),
+		(json!(["1.0.0+z", "1.0.0+a"]), json!(["1.0.0+z", "1.0.0+a"])),
+		(
+			json!(["2.0.0", "nightly", "main", "1.0.0"]),
+			json!(["nightly", "main", "1.0.0", "2.0.0"]),
+		),
+	] {
+		put(
+			root.path(),
+			"hello/index.json",
+			json!({"versions": input}).to_string().as_bytes(),
+		);
+		assert_eq!(
+			dispatch(
+				&FileStorage(root.path().into()),
+				&request(root.path(), "versions")
+			)
+			.await?,
+			json!({"versions": expected})
+		);
+	}
 	Ok(())
 }
 

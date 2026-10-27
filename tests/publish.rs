@@ -322,6 +322,57 @@ async fn published_binaries_round_trip_through_install() -> Result<()> {
 }
 
 #[tokio::test]
+async fn publishing_orders_versions_and_keeps_backports_before_newer_releases() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let store = Store::new(root.path());
+	store.put("hello/index.json", &json!({"versions": ["1.1.2"]}))?;
+	let mut request = request(root.path(), "windows-amd64")?;
+	request.version = Some("1.1.3".into());
+	dispatch(&store, &request).await?;
+	assert_eq!(
+		store.document("hello/index.json").await?,
+		json!({"versions": ["1.1.2", "1.1.3"]})
+	);
+	request.version = Some("1.1.1".into());
+	dispatch(&store, &request).await?;
+	assert_eq!(
+		store.document("hello/index.json").await?,
+		json!({"versions": ["1.1.1", "1.1.2", "1.1.3"]})
+	);
+	Ok(())
+}
+
+#[tokio::test]
+async fn republishing_repairs_old_index_order_without_replacing_artifacts() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let store = Store::new(root.path());
+	let mut request = request(root.path(), "windows-amd64")?;
+	request.version = Some("1.1.3".into());
+	let published = dispatch(&store, &request).await?;
+	let release = store.document("hello/1.1.3/release.json").await?;
+	let older = json!({"version": "1.1.2", "created_at": "2026-10-01T00:00:00Z", "notes": "keep"});
+	store.put(
+		"hello/index.json",
+		&json!({"versions": ["1.1.3", older], "notes": "keep index notes"}),
+	)?;
+	store.writes.lock().expect("test mutex").clear();
+	assert_eq!(dispatch(&store, &request).await?, published);
+	assert_eq!(
+		store.document("hello/index.json").await?,
+		json!({"versions": [older, "1.1.3"], "notes": "keep index notes"})
+	);
+	assert_eq!(store.document("hello/1.1.3/release.json").await?, release);
+	assert_eq!(
+		*store.writes.lock().expect("test mutex"),
+		vec!["hello/index.json"]
+	);
+	store.writes.lock().expect("test mutex").clear();
+	assert_eq!(dispatch(&store, &request).await?, published);
+	assert!(store.writes.lock().expect("test mutex").is_empty());
+	Ok(())
+}
+
+#[tokio::test]
 async fn adding_platform_preserves_release_and_index_metadata() -> Result<()> {
 	let root = tempfile::tempdir()?;
 	let store = Store::new(root.path());

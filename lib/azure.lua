@@ -30,7 +30,7 @@ function M.run(action, ctx)
 		MISE_NO_CONFIG = "1",
 		AZURE_BLOB_MISE = os.getenv("MISE_BIN") or "mise",
 		-- Exact helper release and platform asset: never select a different platform.
-		AZURE_BLOB_HELPER_TOOL = "github:SNcom-GmbH/az-mise-plugin[asset_pattern=" .. asset .. "]@0.6.0",
+		AZURE_BLOB_HELPER_TOOL = "github:SNcom-GmbH/az-mise-plugin[asset_pattern=" .. asset .. "]@0.6.1",
 		AZURE_BLOB_REQUEST = json.encode({
 			action = action,
 			tool = ctx.tool,
