@@ -36,6 +36,81 @@ fn success(output: Output) -> Result<String> {
 }
 
 #[test]
+fn missing_or_empty_storage_url_explains_how_to_fix_the_tool_entry() -> Result<()> {
+	let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	for option in ["", ", storage_url = \"\"", ", storage_url = \" \\t \""] {
+		let root = tempfile::tempdir()?;
+		let project = root.path().join("consumer project");
+		fs::create_dir_all(&project)?;
+		fs::write(
+			project.join("mise.toml"),
+			format!(
+				"[plugins]\nazure-blob = {}\n[tools]\n\"azure-blob:install-builder\" = {{ version = \"1.1.2\"{option} }}\n",
+				toml::Value::String(repo.to_string_lossy().into_owned())
+			),
+		)?;
+		let mut environment = HashMap::from([
+			("MISE_YES".into(), "1".into()),
+			("MISE_LOG_LEVEL".into(), "warn".into()),
+			(
+				"MISE_TRUSTED_CONFIG_PATHS".into(),
+				project.to_string_lossy().into_owned(),
+			),
+			// Validation must fail before attempting to download or run the helper.
+			(
+				"AZURE_BLOB_HELPER".into(),
+				root.path()
+					.join("missing-helper")
+					.to_string_lossy()
+					.into_owned(),
+			),
+		]);
+		for key in [
+			"MISE_DATA_DIR",
+			"MISE_CACHE_DIR",
+			"MISE_CONFIG_DIR",
+			"MISE_STATE_DIR",
+		] {
+			environment.insert(
+				key.into(),
+				root.path().join(key).to_string_lossy().into_owned(),
+			);
+		}
+		for args in [
+			["ls-remote", "azure-blob:install-builder"].as_slice(),
+			["install"].as_slice(),
+		] {
+			let failure = mise(&project, &environment, args)?;
+			assert!(!failure.status.success());
+			let error = String::from_utf8_lossy(&failure.stderr);
+			assert!(
+				error.contains("Missing required tool option: storage_url."),
+				"option {option:?}: {error}"
+			);
+			assert!(
+				error.contains("mise.toml using a tool options table"),
+				"{error}"
+			);
+			assert!(
+				error.contains("[tools.\"azure-blob:install-builder\"]"),
+				"{error}"
+			);
+			assert!(
+				error.contains("storage_url = \"https://ACCOUNT.blob.core.windows.net/CONTAINER\""),
+				"{error}"
+			);
+			assert!(error.contains("Keep your existing tool version"), "{error}");
+			assert!(!error.contains("missing-helper"), "{error}");
+			assert!(
+				error.contains("runtime error: Missing required tool option"),
+				"{error}"
+			);
+		}
+	}
+	Ok(())
+}
+
+#[test]
 fn real_mise_lua_rust_install_and_silent_reuse() -> Result<()> {
 	run_install(None, false)
 }

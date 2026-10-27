@@ -9,8 +9,17 @@ local assets = {
 
 function M.run(action, ctx)
 	local options = ctx.options or {}
-	if not options.storage_url then
-		error("azure-blob requires the storage_url tool option")
+	if type(options.storage_url) ~= "string" or not options.storage_url:match("%S") then
+		local tool = json.encode("azure-blob:" .. ctx.tool)
+		error(
+			"Missing required tool option: storage_url.\n"
+				.. "Set your Azure Blob container URL in mise.toml using a tool options table:\n\n"
+				.. "[tools." .. tool .. "]\n"
+				.. "version = " .. json.encode(ctx.version or "<tool-version>") .. "\n"
+				.. "storage_url = \"https://ACCOUNT.blob.core.windows.net/CONTAINER\"\n\n"
+				.. "Keep your existing tool version and replace ACCOUNT and CONTAINER.",
+			0
+		)
 	end
 	local platform = RUNTIME.osType .. "-" .. RUNTIME.archType
 	local asset = assets[platform]
@@ -21,7 +30,7 @@ function M.run(action, ctx)
 		MISE_NO_CONFIG = "1",
 		AZURE_BLOB_MISE = os.getenv("MISE_BIN") or "mise",
 		-- Exact helper release and platform asset: never select a different platform.
-		AZURE_BLOB_HELPER_TOOL = "github:SNcom-GmbH/az-mise-plugin[asset_pattern=" .. asset .. "]@0.5.1",
+		AZURE_BLOB_HELPER_TOOL = "github:SNcom-GmbH/az-mise-plugin[asset_pattern=" .. asset .. "]@0.5.2",
 		AZURE_BLOB_REQUEST = json.encode({
 			action = action,
 			tool = ctx.tool,
