@@ -1,4 +1,6 @@
 mod common;
+#[path = "helpers/windows_executable.rs"]
+mod windows_executable;
 
 use anyhow::{Result, bail};
 use azure_blob::{
@@ -16,6 +18,7 @@ struct Store {
 	writes: Mutex<Vec<String>>,
 	fail: Mutex<Option<String>>,
 	races: Mutex<HashMap<String, Value>>,
+	metadata_reads: Mutex<usize>,
 }
 
 impl Store {
@@ -25,6 +28,7 @@ impl Store {
 			writes: Mutex::new(Vec::new()),
 			fail: Mutex::new(None),
 			races: Mutex::new(HashMap::new()),
+			metadata_reads: Mutex::new(0),
 		}
 	}
 	fn maybe_fail(&self, name: &str) -> Result<()> {
@@ -65,6 +69,7 @@ impl Storage for Store {
 		self.inner.list(prefix, limit).await
 	}
 	async fn read_versioned(&self, name: &str) -> Result<Option<VersionedBlob>> {
+		*self.metadata_reads.lock().expect("test mutex") += 1;
 		self.inner.read_versioned(name).await
 	}
 	async fn write_metadata(&self, name: &str, bytes: &[u8], etag: Option<&str>) -> Result<()> {
@@ -91,6 +96,183 @@ fn request(root: &Path, platform: &str) -> Result<Request> {
 		"action": "publish", "tool": "hello", "version": "1.0.0", "platform": platform,
 		"file": file, "options": {"storage_url": "https://account.blob.core.windows.net/tools"}
 	}))?)
+}
+
+fn automatic_request(root: &Path) -> Result<Request> {
+	let mut request = request(root, "windows-amd64")?;
+	request.version = None;
+	fs::write(
+		request.file.as_ref().expect("binary"),
+		windows_executable::executable(Some("1.0.0"), Some([1, 0, 0, 0])),
+	)?;
+	Ok(request)
+}
+
+#[tokio::test]
+async fn windows_versions_are_detected_on_any_host_and_round_trip() -> Result<()> {
+	for (string, fixed, expected) in [
+		(
+			Some("1.2.3-beta.1+build"),
+			Some([1, 2, 3, 4]),
+			"1.2.3-beta.1+build",
+		),
+		(Some("2.3.4"), None, "2.3.4"),
+		(None, Some([5, 6, 7, 8]), "5.6.7.8"),
+	] {
+		for pe32 in [false, true] {
+			let root = tempfile::tempdir()?;
+			let store = Store::new(root.path());
+			let mut request = automatic_request(root.path())?;
+			let binary = windows_executable::executable(string, fixed);
+			let binary = if pe32 {
+				windows_executable::pe32(binary)
+			} else {
+				binary
+			};
+			fs::write(request.file.as_ref().expect("binary"), &binary)?;
+			let published = dispatch(&store, &request).await?;
+			assert_eq!(published["version"], expected);
+			assert_eq!(
+				store.document("hello/index.json").await?,
+				json!({"versions": [expected]})
+			);
+			let writes = store.writes.lock().expect("test mutex").clone();
+			assert_eq!(writes.len(), 3);
+			assert!(writes[0].starts_with(&format!("hello/{expected}/windows-amd64-")));
+			assert_eq!(writes[1], format!("hello/{expected}/release.json"));
+			assert_eq!(writes[2], "hello/index.json");
+			assert_eq!(dispatch(&store, &request).await?, published);
+			assert_eq!(store.writes.lock().expect("test mutex").len(), 3);
+			request.action = "install".into();
+			request.version = Some(expected.into());
+			request.install_path = Some(root.path().join("installed"));
+			request.download_path = Some(root.path().join("downloads"));
+			dispatch(&store, &request).await?;
+			assert_eq!(
+				fs::read(root.path().join("installed/bin/hello.exe"))?,
+				binary
+			);
+		}
+	}
+	Ok(())
+}
+
+#[tokio::test]
+async fn unusable_detected_versions_leave_storage_unchanged() -> Result<()> {
+	let mut binaries = vec![
+		Vec::new(),
+		b"not a PE executable".to_vec(),
+		windows_executable::executable(None, None),
+		windows_executable::with_languages(
+			&[("040904B0", "1.0.0"), ("040704B0", "2.0.0")],
+			Some([1, 0, 0, 0]),
+		),
+	];
+	for version in [
+		"",
+		" ",
+		"1.2.3\n",
+		"../escape",
+		"CON",
+		"1/2",
+		"1, 2, 3, 4",
+		"1.2.3:ads",
+	] {
+		binaries.push(windows_executable::executable(
+			Some(version),
+			Some([1, 0, 0, 0]),
+		));
+	}
+	let mut no_resources = windows_executable::executable(None, Some([1, 2, 3, 4]));
+	no_resources[0x118..0x120].fill(0);
+	binaries.push(no_resources);
+	let mut bad_signature = windows_executable::executable(None, Some([1, 2, 3, 4]));
+	bad_signature[648..652].fill(0);
+	binaries.push(bad_signature);
+	let mut truncated = windows_executable::executable(None, Some([1, 2, 3, 4]));
+	truncated.truncate(650);
+	binaries.push(truncated);
+	for binary in binaries {
+		let root = tempfile::tempdir()?;
+		let store = Store::new(root.path());
+		let request = automatic_request(root.path())?;
+		let existing = json!({"versions": ["0.9.0"], "notes": "keep"});
+		store.put("hello/index.json", &existing)?;
+		fs::write(request.file.as_ref().expect("binary"), binary)?;
+		let error = dispatch(&store, &request)
+			.await
+			.expect_err("unusable metadata");
+		assert!(
+			format!("{error:#}").contains("Could not detect a usable Windows FileVersion"),
+			"{error:#}"
+		);
+		assert!(store.writes.lock().expect("test mutex").is_empty());
+		assert_eq!(*store.metadata_reads.lock().expect("test mutex"), 0);
+		assert_eq!(store.document("hello/index.json").await?, existing);
+		assert!(!store.inner.0.join("hello/1.0.0").exists());
+	}
+	Ok(())
+}
+
+#[tokio::test]
+async fn automatic_versions_reject_missing_files_and_directories_without_storage_access()
+-> Result<()> {
+	for source in ["missing.exe", "."] {
+		let root = tempfile::tempdir()?;
+		let store = Store::new(root.path());
+		let mut request = automatic_request(root.path())?;
+		request.file = Some(root.path().join(source));
+		let error = dispatch(&store, &request)
+			.await
+			.expect_err("invalid source");
+		assert!(format!("{error:#}").contains("supply VERSION explicitly"));
+		assert!(store.writes.lock().expect("test mutex").is_empty());
+		assert_eq!(*store.metadata_reads.lock().expect("test mutex"), 0);
+	}
+	Ok(())
+}
+
+#[tokio::test]
+async fn explicit_version_overrides_windows_metadata_and_linux_requires_version() -> Result<()> {
+	let root = tempfile::tempdir()?;
+	let store = Store::new(root.path());
+	let mut request = automatic_request(root.path())?;
+	request.version = Some("2.0.0".into());
+	assert_eq!(dispatch(&store, &request).await?["version"], "2.0.0");
+	request.version = None;
+	request.platform = Some("linux-amd64".into());
+	let writes = store.writes.lock().expect("test mutex").clone();
+	let error = dispatch(&store, &request)
+		.await
+		.expect_err("Linux needs VERSION");
+	assert!(error.to_string().contains("VERSION is required"));
+	assert_eq!(*store.writes.lock().expect("test mutex"), writes);
+	Ok(())
+}
+
+#[tokio::test]
+async fn automatic_versions_keep_publication_retries_and_immutability() -> Result<()> {
+	for failure in ["artifact", "hello/1.0.0/release.json", "hello/index.json"] {
+		let root = tempfile::tempdir()?;
+		let store = Store::new(root.path());
+		let request = automatic_request(root.path())?;
+		*store.fail.lock().expect("test mutex") = Some(failure.into());
+		assert!(dispatch(&store, &request).await.is_err());
+		assert!(!store.inner.0.join("hello/index.json").exists());
+		let published = dispatch(&store, &request).await?;
+		assert_eq!(published["version"], "1.0.0");
+		assert_eq!(dispatch(&store, &request).await?, published);
+		let writes = store.writes.lock().expect("test mutex").clone();
+		let mut changed = windows_executable::executable(Some("1.0.0"), Some([1, 0, 0, 0]));
+		changed.extend(b"changed binary, same FileVersion");
+		fs::write(request.file.as_ref().expect("binary"), changed)?;
+		let error = dispatch(&store, &request)
+			.await
+			.expect_err("immutable release");
+		assert!(error.to_string().contains("use a new version"));
+		assert_eq!(*store.writes.lock().expect("test mutex"), writes);
+	}
+	Ok(())
 }
 
 #[tokio::test]
@@ -305,18 +487,25 @@ async fn invalid_publication_inputs_never_write() -> Result<()> {
 #[cfg(unix)]
 #[tokio::test]
 async fn publishing_rejects_symlinks_and_oversized_binaries() -> Result<()> {
-	let root = tempfile::tempdir()?;
-	let store = Store::new(root.path());
-	let mut request = request(root.path(), "linux-amd64")?;
-	let link = root.path().join("link");
-	std::os::unix::fs::symlink(request.file.as_ref().expect("binary"), &link)?;
-	request.file = Some(link);
-	assert!(dispatch(&store, &request).await.is_err());
-	let huge = root.path().join("huge");
-	fs::File::create(&huge)?.set_len(4 * 1024 * 1024 * 1024 + 1)?;
-	request.file = Some(huge);
-	assert!(dispatch(&store, &request).await.is_err());
-	assert!(store.writes.lock().expect("test mutex").is_empty());
+	for automatic in [false, true] {
+		let root = tempfile::tempdir()?;
+		let store = Store::new(root.path());
+		let mut request = if automatic {
+			automatic_request(root.path())?
+		} else {
+			request(root.path(), "linux-amd64")?
+		};
+		let link = root.path().join("link");
+		std::os::unix::fs::symlink(request.file.as_ref().expect("binary"), &link)?;
+		request.file = Some(link);
+		assert!(dispatch(&store, &request).await.is_err());
+		let huge = root.path().join("huge");
+		fs::File::create(&huge)?.set_len(4 * 1024 * 1024 * 1024 + 1)?;
+		request.file = Some(huge);
+		assert!(dispatch(&store, &request).await.is_err());
+		assert!(store.writes.lock().expect("test mutex").is_empty());
+		assert_eq!(*store.metadata_reads.lock().expect("test mutex"), 0);
+	}
 	Ok(())
 }
 

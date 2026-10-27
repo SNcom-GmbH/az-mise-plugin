@@ -50,9 +50,14 @@ pub(crate) enum Command {
 		overwrite: bool,
 	},
 	/// Package a binary and publish a tool version to Azure Blob Storage.
+	#[command(
+		allow_missing_positional = true,
+		after_help = "Examples:\n  azure-blob --storage-url URL publish my-tool 1.2.3 ./my-tool --platform linux-amd64\n  azure-blob --storage-url URL publish my-tool ./my-tool.exe --platform windows-amd64\n\nOmit VERSION only for windows-amd64 to read the executable's FileVersion metadata.\nThe executable is never run. An explicit VERSION always takes precedence."
+	)]
 	Publish {
 		tool: String,
-		version: String,
+		/// Tool version. Omit to detect a Windows executable's FileVersion.
+		version: Option<String>,
 		/// Binary to install under bin/, keeping its filename.
 		file: PathBuf,
 		#[arg(long, value_parser = ["linux-amd64", "windows-amd64"])]

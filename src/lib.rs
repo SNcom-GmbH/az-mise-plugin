@@ -4,6 +4,8 @@ pub mod config;
 mod publish;
 pub mod storage;
 
+pub use publish::resolve_publish_version;
+
 use anyhow::{Context, Result, bail, ensure};
 use config::{Request, blob_path, filename, portable_path};
 use serde_json::{Value, json};

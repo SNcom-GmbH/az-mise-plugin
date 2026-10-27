@@ -23,7 +23,7 @@ async fn main() {
 async fn run() -> Result<()> {
 	let cli = Cli::parse();
 	let hook = matches!(cli.command, Command::Hook);
-	let request: Request = if hook {
+	let mut request: Request = if hook {
 		serde_json::from_str(&std::env::var("AZURE_BLOB_REQUEST").context("Missing hook request")?)
 			.context("Invalid hook request")?
 	} else {
@@ -67,6 +67,10 @@ async fn run() -> Result<()> {
 		serde_json::from_value(value)?
 	};
 	let url = request.options.validate()?;
+	if request.action == "publish" && request.version.is_none() {
+		// Resolve local metadata before acquiring credentials or contacting storage.
+		request.version = Some(azure_blob::resolve_publish_version(&request)?);
+	}
 	let login =
 		request.action == "login" || std::env::var("AZURE_BLOB_LOGIN").as_deref() == Ok("1");
 	let credential = match auth::credential(&request.options, login).await {

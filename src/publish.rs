@@ -12,7 +12,7 @@ const UPDATE_ATTEMPTS: usize = 8;
 
 pub(crate) async fn publish(store: &dyn Storage, request: &Request) -> Result<Value> {
 	let tool = portable_path(request.tool.as_deref().context("tool is required")?)?;
-	let version = filename(request.version.as_deref().context("version is required")?)?;
+	let version = resolve_publish_version(request)?;
 	let platform = request
 		.platform
 		.as_deref()
@@ -46,7 +46,7 @@ pub(crate) async fn publish(store: &dyn Storage, request: &Request) -> Result<Va
 	let (mut release, _) = read_document(store, &release_blob, json!({"platforms": {}})).await?;
 	merge_platform(&mut release, platform, &artifact)?;
 	let (mut index, _) = read_document(store, &index_blob, json!({"versions": []})).await?;
-	merge_version(&mut index, version)?;
+	merge_version(&mut index, &version)?;
 
 	let artifact_blob = format!("{tool}/{version}/{name}");
 	match store.upload(&artifact_blob, &archive, false).await {
@@ -73,20 +73,82 @@ pub(crate) async fn publish(store: &dyn Storage, request: &Request) -> Result<Va
 	.context("Could not publish release.json; rerun the same command to resume")?;
 	// Visibility through mise is the final step. Never announce a missing manifest.
 	update_document(store, &index_blob, json!({"versions": []}), |index| {
-		merge_version(index, version)
+		merge_version(index, &version)
 	})
 	.await
 	.context("Could not publish index.json; rerun the same command to resume")?;
 	Ok(json!({"published": tool, "version": version, "platform": platform, "artifact": artifact}))
 }
 
-fn package(source: &Path, target: &Path) -> Result<()> {
-	let name = filename(
-		source
-			.file_name()
-			.and_then(|name| name.to_str())
-			.context("Binary needs a UTF-8 filename")?,
-	)?;
+/// Resolves and validates a publication version without accessing Blob Storage.
+pub fn resolve_publish_version(request: &Request) -> Result<String> {
+	if let Some(version) = request.version.as_deref() {
+		return Ok(filename(version)?.to_owned());
+	}
+	ensure!(
+		request.platform.as_deref() == Some("windows-amd64"),
+		"VERSION is required unless --platform windows-amd64 is used for automatic version detection"
+	);
+	let source = request.file.as_deref().context("file is required")?;
+	detect_windows_version(source).context(
+		"Could not detect a usable Windows FileVersion; supply VERSION explicitly (publish TOOL VERSION FILE --platform windows-amd64)",
+	)
+}
+
+fn detect_windows_version(source: &Path) -> Result<String> {
+	let input = open_source(source)?;
+	let size = input.metadata()?.len() as usize;
+	ensure!(size > 0, "Executable is empty");
+	let mapping = pelite::FileMap::open(source).context("Could not read executable metadata")?;
+	// FileMap rounds its Unix mapping to a page boundary. Exclude padding so
+	// truncated resource data cannot be mistaken for bytes present in the file.
+	let bytes = mapping
+		.as_ref()
+		.get(..size)
+		.context("Executable changed size")?;
+	let pe =
+		pelite::PeFile::from_bytes(bytes).context("File is not a valid Windows PE executable")?;
+	let resources = pe
+		.resources()
+		.context("Executable has no readable version resources")?;
+	let info = resources
+		.version_info()
+		.context("Executable has no readable FileVersion metadata")?
+		.file_info();
+	if let Some(fixed) = info.fixed {
+		ensure!(
+			fixed.dwSignature == 0xFEEF04BD,
+			"Invalid Windows version metadata signature"
+		);
+	}
+	let mut versions = info
+		.strings
+		.values()
+		.filter_map(|strings| strings.get("FileVersion"));
+	let version = if let Some(version) = versions.next() {
+		ensure!(
+			versions.all(|other| other == version),
+			"FileVersion differs between resource languages"
+		);
+		version.clone()
+	} else {
+		info.fixed
+			.context("Executable has no FileVersion string or fixed file version")?
+			.dwFileVersion
+			.to_string()
+	};
+	ensure!(
+		!version.is_empty()
+			&& version
+				.bytes()
+				.all(|byte| byte.is_ascii_alphanumeric() || b".-_+".contains(&byte)),
+		"Detected FileVersion must use ASCII letters, digits, '.', '-', '_' or '+' without whitespace"
+	);
+	filename(&version).context("Detected FileVersion is not a safe tool version")?;
+	Ok(version)
+}
+
+fn open_source(source: &Path) -> Result<fs::File> {
 	ensure!(
 		fs::symlink_metadata(source)
 			.with_context(|| format!("Could not read {}", source.display()))?
@@ -98,6 +160,17 @@ fn package(source: &Path, target: &Path) -> Result<()> {
 		input.metadata()?.len() <= MAX_ARTIFACT_BYTES,
 		"Binary exceeds the {MAX_ARTIFACT_BYTES}-byte limit"
 	);
+	Ok(input)
+}
+
+fn package(source: &Path, target: &Path) -> Result<()> {
+	let name = filename(
+		source
+			.file_name()
+			.and_then(|name| name.to_str())
+			.context("Binary needs a UTF-8 filename")?,
+	)?;
+	let input = open_source(source)?;
 	let mut zip = zip::ZipWriter::new(fs::File::create(target)?);
 	zip.start_file(
 		format!("bin/{name}"),

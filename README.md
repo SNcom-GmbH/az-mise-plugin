@@ -7,7 +7,7 @@ Supports Linux and Windows x86-64; no Azure CLI required.
 ## Requirements
 
 - A current mise release.
-- The helper release matching the plugin version (`v0.5.2`) must be published on
+- The helper release matching the plugin version (`v0.6.0`) must be published on
   GitHub. Private release downloads need `GITHUB_TOKEN` or `GH_TOKEN` with read
   access to `SNcom-GmbH/az-mise-plugin`.
 - `Storage Blob Data Reader` on the target container. Publishing additionally
@@ -17,7 +17,7 @@ Supports Linux and Windows x86-64; no Azure CLI required.
 
 ```toml
 [plugins]
-azure-blob = "https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.5.2"
+azure-blob = "https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.6.0"
 
 [tools."azure-blob:my-tool"]
 version = "1.2.3"
@@ -31,11 +31,11 @@ mise ls-remote azure-blob:my-tool
 mise exec -- my-tool --version
 ```
 
-`#v0.5.2` selects the plugin release; `version` selects the tool release. Use a
+`#v0.6.0` selects the plugin release; `version` selects the tool release. Use a
 full commit SHA for production. After changing the plugin ref, reinstall it:
 
 ```sh
-mise plugins install --force azure-blob 'https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.5.2'
+mise plugins install --force azure-blob 'https://github.com/SNcom-GmbH/az-mise-plugin.git#v0.6.0'
 ```
 
 The plugin downloads its Rust helper through mise's GitHub backend. mise
@@ -119,8 +119,19 @@ azure-blob --storage-url https://youraccount.blob.core.windows.net/tools \
 
 Packages a single binary under `bin/`, calculates SHA-256 and size, uploads it,
 then updates `release.json` and `index.json`. Use `--platform windows-amd64` for
-Windows. Authentication is the same as downloads; publishing requires **Storage
-Blob Data Contributor**. Other platforms are preserved. Changed binaries require
+Windows. Omit the version to read a Windows executable's `FileVersion` metadata:
+
+```sh
+azure-blob --storage-url https://youraccount.blob.core.windows.net/tools \
+  publish my-tool ./my-tool.exe --platform windows-amd64
+```
+
+Detection works on Linux and Windows without running the executable. Missing or
+invalid version metadata fails before uploading anything. An explicit version
+always takes precedence. See [publication version detection](docs/publishing.md).
+
+Authentication is the same as downloads; publishing requires **Storage Blob
+Data Contributor**. Other platforms are preserved. Changed binaries require
 a new version; rerunning the same publication is safe, including after failure.
 
 ## Manage files

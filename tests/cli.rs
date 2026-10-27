@@ -1,5 +1,8 @@
 use std::process::Command;
 
+#[path = "helpers/windows_executable.rs"]
+mod windows_executable;
+
 fn cli() -> Command {
 	let mut command = Command::new(env!("CARGO_BIN_EXE_azure-blob"));
 	for (key, _) in std::env::vars_os() {
@@ -21,6 +24,94 @@ fn cli_reports_azure_blob_name() {
 	let output = cli().arg("--help").output().expect("CLI help");
 	assert!(output.status.success());
 	assert!(String::from_utf8_lossy(&output.stdout).contains("Usage: azure-blob"));
+}
+
+#[test]
+fn publish_help_describes_both_version_forms() {
+	let output = cli()
+		.args(["publish", "--help"])
+		.output()
+		.expect("CLI help");
+	assert!(output.status.success());
+	let help = String::from_utf8_lossy(&output.stdout);
+	assert!(help.contains("<TOOL> [VERSION] <FILE>"));
+	assert!(help.contains("FileVersion"));
+	assert!(help.contains("publish my-tool 1.2.3 ./my-tool --platform linux-amd64"));
+	assert!(help.contains("publish my-tool ./my-tool.exe --platform windows-amd64"));
+}
+
+#[test]
+fn publish_parses_explicit_and_automatic_versions_without_credentials() {
+	let root = tempfile::tempdir().expect("tempdir");
+	let file = root.path().join("my tool.exe");
+	std::fs::write(
+		&file,
+		windows_executable::pe32(windows_executable::with_languages(
+			&[("040904B0", "1.2.3"), ("040704B0", "1.2.3")],
+			None,
+		)),
+	)
+	.expect("fixture");
+	for platform in ["linux-amd64", "windows-amd64"] {
+		for explicit in [true, false] {
+			let mut command = cli();
+			command
+				.env("CI", "1")
+				.env("AZURE_BLOB_STORAGE_TOKEN", " ")
+				.args([
+					"--storage-url",
+					"https://account.blob.core.windows.net/tools",
+					"publish",
+					"hello",
+				]);
+			if explicit {
+				command.arg("9.8.7");
+			}
+			let output = command
+				.arg(&file)
+				.args(["--platform", platform])
+				.output()
+				.expect("CLI");
+			assert!(!output.status.success());
+			let error = String::from_utf8_lossy(&output.stderr);
+			assert!(
+				error.contains(if !explicit && platform == "linux-amd64" {
+					"VERSION is required"
+				} else {
+					"AZURE_BLOB_STORAGE_TOKEN must contain"
+				}),
+				"{error}"
+			);
+		}
+	}
+}
+
+#[test]
+fn publish_reports_missing_windows_metadata_before_authentication() {
+	let root = tempfile::tempdir().expect("tempdir");
+	let file = root.path().join("unversioned.exe");
+	std::fs::write(&file, windows_executable::executable(None, None)).expect("fixture");
+	let output = cli()
+		.env("CI", "1")
+		.args([
+			"--storage-url",
+			"https://account.blob.core.windows.net/tools",
+			"publish",
+			"hello",
+		])
+		.arg(&file)
+		.args(["--platform", "windows-amd64"])
+		.output()
+		.expect("CLI");
+	assert!(!output.status.success());
+	let error = String::from_utf8_lossy(&output.stderr);
+	assert!(
+		error.contains("Could not detect a usable Windows FileVersion"),
+		"{error}"
+	);
+	assert!(error.contains("supply VERSION explicitly"));
+	assert!(!error.contains("identity") && !error.contains("sign-in"));
+	assert!(output.stdout.is_empty());
 }
 
 #[test]
